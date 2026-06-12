@@ -1,0 +1,16 @@
+{
+  "name": "hydra-llm-router",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "hydra": "./src/cli.js"
+  },
+  "scripts": {
+    "test": "node --test",
+    "start": "node src/cli.js serve"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
