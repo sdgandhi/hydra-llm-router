@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { createServer } from "node:http";
 import process from "node:process";
+import { fileURLToPath } from "node:url";
 import {
   defaultPaths,
   installHydraConfig,
@@ -12,6 +13,7 @@ import {
   removePidFile,
 } from "./config.js";
 import { configureDebugLog, writeDebugLine } from "./debug.js";
+import { startMenuBar } from "./menubar.js";
 import { createHydraHandler } from "./router.js";
 
 const commands = new Set(["serve", "stop", "refresh", "install", "restore", "status"]);
@@ -33,10 +35,11 @@ Options:
   --ollama-url <url>       Ollama base URL (default: http://127.0.0.1:11434)
   --openai-base-url <url>  Cloud upstream URL (default: https://chatgpt.com/backend-api/codex)
   --debug-auth            Log redacted request auth/header diagnostics
+  --no-menubar            Do not show the macOS menu bar item while serving
 `;
 }
 
-function parseArgs(argv) {
+export function parseArgs(argv) {
   const [command, ...rest] = argv;
   if (!commands.has(command)) {
     throw new Error(command ? `Unknown command: ${command}` : "Missing command");
@@ -49,8 +52,8 @@ function parseArgs(argv) {
     if (!key.startsWith("--")) {
       throw new Error(`Unexpected argument: ${key}`);
     }
-    if (key === "--debug-auth") {
-      options.debug_auth = true;
+    if (key === "--debug-auth" || key === "--no-menubar") {
+      options[key.slice(2).replaceAll("-", "_")] = true;
       continue;
     }
     if (value == null || value.startsWith("--")) {
@@ -63,7 +66,7 @@ function parseArgs(argv) {
   return { command, options };
 }
 
-function buildConfig(options = {}) {
+export function buildConfig(options = {}) {
   const paths = defaultPaths(options.codex_home);
   return {
     paths,
@@ -74,10 +77,11 @@ function buildConfig(options = {}) {
       process.env.HYDRA_OPENAI_BASE_URL ??
       "https://chatgpt.com/backend-api/codex",
     debugAuth: Boolean(options.debug_auth ?? process.env.HYDRA_DEBUG_AUTH),
+    noMenuBar: Boolean(options.no_menubar),
   };
 }
 
-async function main() {
+export async function main() {
   let parsed;
   try {
     parsed = parseArgs(process.argv.slice(2));
@@ -151,35 +155,48 @@ async function main() {
   }
 
   const server = createServer(handler);
+  let menuBar = null;
+  let shuttingDown = false;
+
+  const shutdown = async ({ signal, restoreOnQuit = false }) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    await shutdownHydra({
+      config,
+      server,
+      menuBar,
+      signal,
+      restoreOnQuit,
+    });
+  };
+
   server.on("upgrade", handler.handleUpgrade);
   server.on("error", async (error) => {
     logProcessError("server_error", error);
+    menuBar?.stop();
     await removePidFile(config.paths, process.pid);
     console.error(error.stack || error.message);
     process.exitCode = 1;
   });
 
-  const shutdown = async (signal) => {
-    if (config.debugAuth) {
-      writeDebugLine("hydra-stop", { at: new Date().toISOString(), pid: process.pid, signal });
-    }
-    server.close(async () => {
-      await removePidFile(config.paths, process.pid);
-      process.exit(0);
-    });
-  };
-  process.on("SIGINT", () => shutdown("SIGINT"));
-  process.on("SIGTERM", () => shutdown("SIGTERM"));
+  process.on("SIGINT", () => shutdown({ signal: "SIGINT" }));
+  process.on("SIGTERM", () => shutdown({ signal: "SIGTERM" }));
   process.on("uncaughtException", async (error) => {
     logProcessError("uncaught_exception", error);
+    menuBar?.stop();
     await removePidFile(config.paths, process.pid);
     process.exit(1);
   });
   process.on("unhandledRejection", async (reason) => {
     const error = reason instanceof Error ? reason : new Error(String(reason));
     logProcessError("unhandled_rejection", error);
+    menuBar?.stop();
     await removePidFile(config.paths, process.pid);
     process.exit(1);
+  });
+
+  menuBar = startMenuBar(config, {
+    onQuit: () => shutdown({ signal: "menubar", restoreOnQuit: true }),
   });
 
   await writePidFile(config.paths, process.pid);
@@ -207,7 +224,57 @@ async function main() {
   }
 }
 
-main().catch((error) => {
-  console.error(error.stack || error.message);
-  process.exitCode = 1;
-});
+export async function shutdownHydra({
+  config,
+  server,
+  menuBar,
+  signal,
+  restoreOnQuit = false,
+  restoreImpl = restoreConfig,
+  removePidFileImpl = removePidFile,
+  exitImpl = process.exit,
+  logger = console,
+}) {
+  if (config.debugAuth) {
+    writeDebugLine("hydra-stop", { at: new Date().toISOString(), pid: process.pid, signal });
+  }
+
+  let restoreStatus = "not_requested";
+  if (restoreOnQuit) {
+    try {
+      const result = await restoreImpl(config.paths);
+      restoreStatus = "restored";
+      logger.log(`Restored Codex config from ${result.backupPath}`);
+    } catch (error) {
+      if (error.code === "ENOENT") {
+        restoreStatus = "missing_backup";
+        logger.warn(`Hydra config restore skipped; no backup found at ${config.paths.backupPath}`);
+      } else {
+        restoreStatus = "failed";
+        logger.error(`Hydra config restore failed: ${error.stack || error.message}`);
+      }
+    }
+  }
+
+  await closeServer(server);
+  await removePidFileImpl(config.paths, process.pid);
+  menuBar?.stop();
+  exitImpl(0);
+  return { restoreStatus };
+}
+
+async function closeServer(server) {
+  await new Promise((resolve, reject) => {
+    server.close((error) => {
+      if (error && error.code !== "ERR_SERVER_NOT_RUNNING") reject(error);
+      else resolve();
+    });
+  });
+}
+
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  main().catch((error) => {
+    console.error(error.stack || error.message);
+    process.exitCode = 1;
+  });
+}

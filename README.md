@@ -25,6 +25,14 @@ node src/cli.js status
 
 `install` backs up `~/.codex/config.toml`, refreshes the merged catalog, and points Codex Desktop at Hydra. `restore` writes the saved backup back.
 
+On macOS, `serve` shows a Hydra menu bar item with runtime details. Use `Quit Hydra` from that menu to restore the saved Codex config backup and stop the server. For terminal-only use:
+
+```sh
+node src/cli.js serve --no-menubar
+```
+
+You can also double-click `Hydra.command` from Finder. It runs `install`, starts `serve` in the background, writes launcher output to `~/.codex/hydra/launcher.log`, and hides Terminal after startup.
+
 After testing with debug mode, restart without debug logging:
 
 ```sh
