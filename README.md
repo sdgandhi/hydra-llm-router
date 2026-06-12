@@ -2,6 +2,8 @@
 
 Hydra lets Codex Desktop use one model selector for both OpenAI cloud models and local Ollama models.
 
+![Codex Desktop model selector showing OpenAI and Ollama models side by side](docs/assets/codex-model-selector.png)
+
 The important design choice is that Hydra does not add a new Codex model provider. It keeps Codex Desktop in its built-in OpenAI provider bucket and only changes:
 
 - `model_catalog_json` to a merged Hydra catalog
