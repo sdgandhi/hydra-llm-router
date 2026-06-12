@@ -74,6 +74,148 @@ function responseId() {
   return `resp_hydra_${Date.now().toString(36)}`;
 }
 
+function responseEnvelope({ id, model, status = "in_progress", output = [] }) {
+  return {
+    id,
+    object: "response",
+    created_at: Math.floor(Date.now() / 1000),
+    status,
+    model,
+    output,
+  };
+}
+
+function messageItem({ id, status = "in_progress", text }) {
+  const item = {
+    id: `${id}_msg`,
+    type: "message",
+    role: "assistant",
+    status,
+    content: [],
+  };
+  if (text !== undefined) item.content = [{ type: "output_text", text }];
+  return item;
+}
+
+function stripThinkingText(text) {
+  return String(text ?? "").replace(/<think\b[^>]*>[\s\S]*?<\/think>/gi, "").trimStart();
+}
+
+function createThinkingFilter() {
+  let inThinkingTag = false;
+  let pending = "";
+  let strippedChars = 0;
+
+  function holdPartialOpenTag(text) {
+    const marker = "<think";
+    const lower = text.toLowerCase();
+    for (let length = Math.min(marker.length - 1, text.length); length > 0; length -= 1) {
+      if (marker.startsWith(lower.slice(-length))) {
+        pending = text.slice(-length);
+        return text.slice(0, -length);
+      }
+    }
+    pending = "";
+    return text;
+  }
+
+  return {
+    push(delta) {
+      let text = pending + String(delta ?? "");
+      pending = "";
+      let visible = "";
+
+      while (text) {
+        if (inThinkingTag) {
+          const closeIndex = text.toLowerCase().indexOf("</think>");
+          if (closeIndex === -1) {
+            strippedChars += text.length;
+            return visible;
+          }
+          strippedChars += closeIndex + "</think>".length;
+          text = text.slice(closeIndex + "</think>".length);
+          inThinkingTag = false;
+          continue;
+        }
+
+        const openIndex = text.toLowerCase().indexOf("<think");
+        if (openIndex === -1) {
+          visible += holdPartialOpenTag(text);
+          return visible;
+        }
+
+        visible += text.slice(0, openIndex);
+        const tagEnd = text.indexOf(">", openIndex);
+        if (tagEnd === -1) {
+          strippedChars += text.length - openIndex;
+          inThinkingTag = true;
+          return visible;
+        }
+        strippedChars += tagEnd - openIndex + 1;
+        text = text.slice(tagEnd + 1);
+        inThinkingTag = true;
+      }
+
+      return visible;
+    },
+    finish() {
+      const visible = inThinkingTag ? "" : pending;
+      if (inThinkingTag) strippedChars += pending.length;
+      pending = "";
+      return visible;
+    },
+    get strippedChars() {
+      return strippedChars;
+    },
+  };
+}
+
+function writeResponseStreamStart(res, { id, model }) {
+  const response = responseEnvelope({ id, model });
+  const item = messageItem({ id });
+  writeSse(res, "response.created", { type: "response.created", response });
+  writeSse(res, "response.in_progress", { type: "response.in_progress", response });
+  writeSse(res, "response.output_item.added", {
+    type: "response.output_item.added",
+    output_index: 0,
+    item,
+  });
+  writeSse(res, "response.content_part.added", {
+    type: "response.content_part.added",
+    item_id: item.id,
+    output_index: 0,
+    content_index: 0,
+    part: { type: "output_text", text: "" },
+  });
+}
+
+function writeResponseStreamDone(res, { id, model, text }) {
+  const item = messageItem({ id, status: "completed", text });
+  writeSse(res, "response.output_text.done", {
+    type: "response.output_text.done",
+    item_id: item.id,
+    output_index: 0,
+    content_index: 0,
+    text,
+  });
+  writeSse(res, "response.content_part.done", {
+    type: "response.content_part.done",
+    item_id: item.id,
+    output_index: 0,
+    content_index: 0,
+    part: { type: "output_text", text },
+  });
+  writeSse(res, "response.output_item.done", {
+    type: "response.output_item.done",
+    output_index: 0,
+    item,
+  });
+  writeSse(res, "response.completed", {
+    type: "response.completed",
+    response: responseEnvelope({ id, model, status: "completed", output: [item] }),
+  });
+}
+
 async function callOllama({ req, body, route, ollamaBaseUrl, res, debugAuth }) {
   const stream = body.stream !== false;
   const id = responseId();
@@ -87,11 +229,37 @@ async function callOllama({ req, body, route, ollamaBaseUrl, res, debugAuth }) {
       num_predict: body.max_output_tokens,
     },
   };
+  const url = new URL("/api/chat", ollamaBaseUrl);
 
-  const response = await fetch(new URL("/api/chat", ollamaBaseUrl), {
+  debugLogUpstream({
+    enabled: debugAuth,
+    req,
+    route,
+    upstream: {
+      provider: "ollama",
+      url: url.toString(),
+      requestBytes: Buffer.byteLength(JSON.stringify(ollamaBody)),
+      stream,
+    },
+    stage: "request",
+  });
+
+  const response = await fetch(url, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(ollamaBody),
+  });
+  debugLogUpstream({
+    enabled: debugAuth,
+    req,
+    route,
+    upstream: {
+      provider: "ollama",
+      url: url.toString(),
+      status: response.status,
+      contentType: response.headers.get("content-type"),
+    },
+    stage: "response",
   });
 
   if (!response.ok) {
@@ -109,24 +277,14 @@ async function callOllama({ req, body, route, ollamaBaseUrl, res, debugAuth }) {
 
   if (!stream) {
     const data = await response.json();
+    const text = stripThinkingText(data.message?.content ?? "");
+    const output = messageItem({ id, status: "completed", text });
     jsonResponse(
       req,
       res,
       200,
       {
-        id,
-        object: "response",
-        status: "completed",
-        model: body.model,
-        output: [
-          {
-            id: `${id}_msg`,
-            type: "message",
-            role: "assistant",
-            status: "completed",
-            content: [{ type: "output_text", text: data.message?.content ?? "" }],
-          },
-        ],
+        ...responseEnvelope({ id, model: body.model, status: "completed", output: [output] }),
         usage: {
           input_tokens: data.prompt_eval_count ?? 0,
           output_tokens: data.eval_count ?? 0,
@@ -140,10 +298,14 @@ async function callOllama({ req, body, route, ollamaBaseUrl, res, debugAuth }) {
   }
 
   sseHeaders(res);
-  writeSse(res, "response.created", { type: "response.created", response: { id, model: body.model } });
+  writeResponseStreamStart(res, { id, model: body.model });
   const decoder = new TextDecoder();
+  const thinkingFilter = createThinkingFilter();
   let buffer = "";
   let fullText = "";
+  let contentDeltas = 0;
+  let thinkingDeltas = 0;
+  let doneReason;
 
   for await (const chunk of response.body) {
     buffer += decoder.decode(chunk, { stream: true });
@@ -152,9 +314,11 @@ async function callOllama({ req, body, route, ollamaBaseUrl, res, debugAuth }) {
     for (const line of lines) {
       if (!line.trim()) continue;
       const event = JSON.parse(line);
-      const delta = event.message?.content ?? "";
+      if (event.message?.thinking) thinkingDeltas += 1;
+      const delta = thinkingFilter.push(event.message?.content ?? "");
       if (delta) {
         fullText += delta;
+        contentDeltas += 1;
         writeSse(res, "response.output_text.delta", {
           type: "response.output_text.delta",
           item_id: `${id}_msg`,
@@ -164,17 +328,20 @@ async function callOllama({ req, body, route, ollamaBaseUrl, res, debugAuth }) {
         });
       }
       if (event.done) {
-        writeSse(res, "response.output_text.done", {
-          type: "response.output_text.done",
-          item_id: `${id}_msg`,
-          output_index: 0,
-          content_index: 0,
-          text: fullText,
-        });
-        writeSse(res, "response.completed", {
-          type: "response.completed",
-          response: { id, status: "completed", model: body.model },
-        });
+        doneReason = event.done_reason;
+        const finalDelta = thinkingFilter.finish();
+        if (finalDelta) {
+          fullText += finalDelta;
+          contentDeltas += 1;
+          writeSse(res, "response.output_text.delta", {
+            type: "response.output_text.delta",
+            item_id: `${id}_msg`,
+            output_index: 0,
+            content_index: 0,
+            delta: finalDelta,
+          });
+        }
+        writeResponseStreamDone(res, { id, model: body.model, text: fullText });
       }
     }
   }
@@ -185,7 +352,16 @@ async function callOllama({ req, body, route, ollamaBaseUrl, res, debugAuth }) {
     req,
     status: 200,
     route,
-    upstream: { provider: "ollama", status: response.status, stream: true },
+    upstream: {
+      provider: "ollama",
+      status: response.status,
+      stream: true,
+      contentDeltas,
+      thinkingDeltas,
+      strippedThinkChars: thinkingFilter.strippedChars,
+      outputChars: fullText.length,
+      doneReason,
+    },
   });
 }
 
