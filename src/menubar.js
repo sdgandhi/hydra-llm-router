@@ -44,6 +44,33 @@ export function startMenuBar(config, { onQuit, spawnImpl = spawn } = {}) {
   };
 }
 
+export function menuBarStatusItems(config) {
+  const items = [
+    { kind: "info", title: "Hydra Running" },
+    { kind: "separator" },
+    { kind: "info", title: `Router: http://127.0.0.1:${config.port}` },
+    { kind: "info", title: `Cloud: ${config.openaiBaseUrl}` },
+    { kind: "info", title: `Ollama: ${config.ollamaBaseUrl}` },
+    { kind: "info", title: `Emulated tools: ${emulatedToolsLabel(config.emulatedToolStatuses ?? [])}` },
+  ];
+
+  items.push(
+    { kind: "info", title: config.debugAuth ? `Debug log: ${config.paths.logPath}` : "Debug logging: off" },
+    { kind: "info", title: `Codex config: ${config.paths.codexConfigPath}` },
+  );
+  return items;
+}
+
+function emulatedToolsLabel(statuses) {
+  if (!statuses.length) return "unknown";
+  return statuses
+    .map((tool) => {
+      const detail = tool.detail ? ` (${tool.detail})` : "";
+      return `${tool.name}: ${tool.status}${detail}`;
+    })
+    .join(", ");
+}
+
 function handleHelperLine(line, onQuit) {
   let message;
   try {
@@ -58,11 +85,6 @@ function menuBarPayload(config) {
   return {
     title: "Hydra",
     iconPath: path.join(path.dirname(fileURLToPath(import.meta.url)), "hydra-menubar.png"),
-    routerUrl: `http://127.0.0.1:${config.port}`,
-    openaiBaseUrl: config.openaiBaseUrl,
-    ollamaBaseUrl: config.ollamaBaseUrl,
-    debugAuth: config.debugAuth,
-    logPath: config.paths.logPath,
-    codexConfigPath: config.paths.codexConfigPath,
+    statusItems: menuBarStatusItems(config),
   };
 }

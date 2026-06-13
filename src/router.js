@@ -1,6 +1,8 @@
 import { execFile } from "node:child_process";
-import { readFile } from "node:fs/promises";
+import { constants as fsConstants } from "node:fs";
+import { access, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
+import { delimiter, isAbsolute, join } from "node:path";
 import { promisify } from "node:util";
 import { brotliDecompressSync, gunzipSync, inflateSync, zstdDecompressSync } from "node:zlib";
 import { debugLogAccess, debugLogError, debugLogRequest, debugLogUpgrade, debugLogUpstream } from "./debug.js";
@@ -10,6 +12,47 @@ const EMULATED_TOOL_NAMES = new Set(["web_search", "tool_search"]);
 const MAX_EMULATED_TOOL_ROUNDS = 4;
 const MAX_TOOL_RESULT_CHARS = 6000;
 const HYDRA_DDGR_PATH = `${homedir()}/.codex/hydra/bin/ddgr`;
+
+function webSearchCommands() {
+  return process.env.HYDRA_WEB_SEARCH_COMMAND
+    ? [process.env.HYDRA_WEB_SEARCH_COMMAND]
+    : [HYDRA_DDGR_PATH, "ddgr", "search", "duckduckgo"];
+}
+
+async function isExecutable(command) {
+  const [bin] = String(command ?? "").split(/\s+/).filter(Boolean);
+  if (!bin) return false;
+  const candidates =
+    isAbsolute(bin) || bin.includes("/")
+      ? [bin]
+      : String(process.env.PATH ?? "")
+          .split(delimiter)
+          .filter(Boolean)
+          .map((dir) => join(dir, bin));
+
+  for (const candidate of candidates) {
+    try {
+      await access(candidate, fsConstants.X_OK);
+      return true;
+    } catch {
+      // Try the next candidate.
+    }
+  }
+  return false;
+}
+
+export async function emulatedToolStatuses() {
+  const commands = webSearchCommands();
+  const webSearchReady = (await Promise.all(commands.map((command) => isExecutable(command)))).some(Boolean);
+  return [
+    {
+      name: "web_search",
+      status: webSearchReady ? "ready" : "unavailable",
+      detail: webSearchReady ? undefined : "no executable search command found",
+    },
+    { name: "tool_search", status: "ready" },
+  ];
+}
 
 function jsonResponse(req, res, status, body, debugAuth = false, extra = {}) {
   const payload = JSON.stringify(body);
@@ -243,9 +286,7 @@ function emulateToolSearch({ tools, query, limit = 8 }) {
 }
 
 async function runSearch({ query, maxResults = 5 }) {
-  const commands = process.env.HYDRA_WEB_SEARCH_COMMAND
-    ? [process.env.HYDRA_WEB_SEARCH_COMMAND]
-    : [HYDRA_DDGR_PATH, "ddgr", "search", "duckduckgo"];
+  const commands = webSearchCommands();
   const limitedResults = Math.max(1, Math.min(Number(maxResults) || 5, 10));
   const failures = [];
 
@@ -652,16 +693,16 @@ async function callOllama({ req, body, route, ollamaBaseUrl, res, debugAuth }) {
     const messageIndex = emittedThinking ? 1 : 0;
     if (!emittedContent) {
       writeMessageStart(res, { id, outputIndex: messageIndex });
-      const warning = "Stopped after repeated emulated tool calls without a final answer.";
+      const fallbackMessage = "Stopped after repeated emulated tool calls without a final answer.";
       writeSse(res, "response.output_text.delta", {
         type: "response.output_text.delta",
         item_id: `${id}_msg`,
         output_index: messageIndex,
         content_index: 0,
-        delta: warning,
+        delta: fallbackMessage,
       });
-      fullText += warning;
-      contentChars += warning.length;
+      fullText += fallbackMessage;
+      contentChars += fallbackMessage.length;
       emittedContent = true;
     }
     const answerText = contentChars ? fullText.slice(thinkingChars) : "";

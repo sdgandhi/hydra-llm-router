@@ -13,8 +13,8 @@ import {
   removePidFile,
 } from "./config.js";
 import { configureDebugLog, writeDebugLine } from "./debug.js";
-import { startMenuBar } from "./menubar.js";
-import { createHydraHandler } from "./router.js";
+import { menuBarStatusItems, startMenuBar } from "./menubar.js";
+import { createHydraHandler, emulatedToolStatuses } from "./router.js";
 
 const commands = new Set(["serve", "stop", "refresh", "install", "restore", "status"]);
 
@@ -143,6 +143,7 @@ export async function main() {
     apiKey: process.env.OPENAI_API_KEY,
     debugAuth: config.debugAuth,
   });
+  config.emulatedToolStatuses = await emulatedToolStatuses();
 
   if (config.debugAuth) {
     configureDebugLog(config.paths.logPath);
@@ -201,9 +202,8 @@ export async function main() {
 
   await writePidFile(config.paths, process.pid);
   server.listen(config.port, "127.0.0.1", () => {
-    console.log(`hydra listening on http://127.0.0.1:${config.port}`);
-    if (config.debugAuth) {
-      console.log(`hydra debug log: ${config.paths.logPath}`);
+    for (const item of menuBarStatusItems(config)) {
+      if (item.kind !== "separator") console.log(item.title);
     }
   });
 

@@ -1,12 +1,45 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { parseArgs, shutdownHydra } from "../src/cli.js";
+import { menuBarStatusItems } from "../src/menubar.js";
 
 test("parses --no-menubar as a serve flag", () => {
   assert.deepEqual(parseArgs(["serve", "--no-menubar"]), {
     command: "serve",
     options: { no_menubar: true },
   });
+});
+
+test("serve status items match the menubar dropdown content", () => {
+  assert.deepEqual(
+    menuBarStatusItems({
+      port: 3847,
+      openaiBaseUrl: "https://chatgpt.com/backend-api/codex",
+      ollamaBaseUrl: "http://127.0.0.1:11434",
+      debugAuth: true,
+      emulatedToolStatuses: [
+        { name: "web_search", status: "unavailable", detail: "no executable search command found" },
+        { name: "tool_search", status: "ready" },
+      ],
+      paths: {
+        logPath: "/tmp/hydra.log",
+        codexConfigPath: "/tmp/config.toml",
+      },
+    }),
+    [
+      { kind: "info", title: "Hydra Running" },
+      { kind: "separator" },
+      { kind: "info", title: "Router: http://127.0.0.1:3847" },
+      { kind: "info", title: "Cloud: https://chatgpt.com/backend-api/codex" },
+      { kind: "info", title: "Ollama: http://127.0.0.1:11434" },
+      {
+        kind: "info",
+        title: "Emulated tools: web_search: unavailable (no executable search command found), tool_search: ready",
+      },
+      { kind: "info", title: "Debug log: /tmp/hydra.log" },
+      { kind: "info", title: "Codex config: /tmp/config.toml" },
+    ],
+  );
 });
 
 test("menu quit restores config, closes the server, removes pid, and stops helper", async () => {

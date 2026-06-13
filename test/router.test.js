@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { zstdCompressSync } from "node:zlib";
-import { decodeBody, normalizeOllamaTools, upstreamResponsesUrl } from "../src/router.js";
+import { decodeBody, emulatedToolStatuses, normalizeOllamaTools, upstreamResponsesUrl } from "../src/router.js";
 
 test("forwards /responses under an OpenAI-compatible /v1 base path", () => {
   assert.equal(
@@ -110,3 +110,34 @@ test("converts hosted search tools to emulated Ollama tools", () => {
     ["web_search", "tool_search"],
   );
 });
+
+test("reports emulated web search as ready when command exists", async () => {
+  const original = process.env.HYDRA_WEB_SEARCH_COMMAND;
+  process.env.HYDRA_WEB_SEARCH_COMMAND = "/bin/echo --fake-search";
+  try {
+    assert.deepEqual(await emulatedToolStatuses(), [
+      { name: "web_search", status: "ready", detail: undefined },
+      { name: "tool_search", status: "ready" },
+    ]);
+  } finally {
+    restoreEnv("HYDRA_WEB_SEARCH_COMMAND", original);
+  }
+});
+
+test("reports emulated web search as unavailable when command is missing", async () => {
+  const original = process.env.HYDRA_WEB_SEARCH_COMMAND;
+  process.env.HYDRA_WEB_SEARCH_COMMAND = "/definitely/missing/hydra-search";
+  try {
+    assert.deepEqual(await emulatedToolStatuses(), [
+      { name: "web_search", status: "unavailable", detail: "no executable search command found" },
+      { name: "tool_search", status: "ready" },
+    ]);
+  } finally {
+    restoreEnv("HYDRA_WEB_SEARCH_COMMAND", original);
+  }
+});
+
+function restoreEnv(key, value) {
+  if (value === undefined) delete process.env[key];
+  else process.env[key] = value;
+}

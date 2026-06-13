@@ -16,19 +16,16 @@ final class HydraMenuDelegate: NSObject, NSApplicationDelegate {
     configureStatusButton(item.button)
 
     let menu = NSMenu()
-    addDisabled("Hydra Running", to: menu)
-    menu.addItem(NSMenuItem.separator())
-    addDisabled("Router: \(stringValue("routerUrl"))", to: menu)
-    addDisabled("Cloud: \(stringValue("openaiBaseUrl"))", to: menu)
-    addDisabled("Ollama: \(stringValue("ollamaBaseUrl"))", to: menu)
-
-    if boolValue("debugAuth") {
-      addDisabled("Debug log: \(stringValue("logPath"))", to: menu)
-    } else {
-      addDisabled("Debug logging: off", to: menu)
+    for statusItem in statusItems() {
+      let kind = statusItem["kind"] as? String ?? "info"
+      let title = statusItem["title"] as? String ?? ""
+      switch kind {
+      case "separator":
+        menu.addItem(NSMenuItem.separator())
+      default:
+        addDisabled(title, to: menu)
+      }
     }
-
-    addDisabled("Codex config: \(stringValue("codexConfigPath"))", to: menu)
     menu.addItem(NSMenuItem.separator())
 
     let quit = NSMenuItem(title: "Quit Hydra", action: #selector(quitHydra), keyEquivalent: "q")
@@ -73,8 +70,8 @@ final class HydraMenuDelegate: NSObject, NSApplicationDelegate {
     return info[key] as? String ?? fallback
   }
 
-  private func boolValue(_ key: String) -> Bool {
-    return info[key] as? Bool ?? false
+  private func statusItems() -> [[String: Any]] {
+    return info["statusItems"] as? [[String: Any]] ?? []
   }
 
   private func emit(_ value: [String: String]) {
