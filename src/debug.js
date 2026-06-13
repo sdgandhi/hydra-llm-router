@@ -24,13 +24,16 @@ export function sanitizeHeaders(headers) {
 
 export function summarizeBody(body) {
   if (!body || typeof body !== "object") return { type: typeof body };
+  const tools = Array.isArray(body.tools) ? body.tools : [];
   return {
     model: body.model,
     stream: body.stream,
     inputType: Array.isArray(body.input) ? "array" : typeof body.input,
     inputItems: Array.isArray(body.input) ? body.input.length : undefined,
-    hasTools: Array.isArray(body.tools) ? body.tools.length > 0 : Boolean(body.tools),
-    toolCount: Array.isArray(body.tools) ? body.tools.length : undefined,
+    hasTools: Array.isArray(body.tools) ? tools.length > 0 : Boolean(body.tools),
+    toolCount: Array.isArray(body.tools) ? tools.length : undefined,
+    functionToolCount: Array.isArray(body.tools) ? tools.filter((tool) => tool?.type === "function").length : undefined,
+    toolTypes: Array.isArray(body.tools) ? [...new Set(tools.map((tool) => tool?.type ?? "<missing>"))].sort() : undefined,
     keys: Object.keys(body).sort(),
   };
 }

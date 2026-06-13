@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { zstdCompressSync } from "node:zlib";
-import { decodeBody, upstreamResponsesUrl } from "../src/router.js";
+import { decodeBody, normalizeOllamaTools, upstreamResponsesUrl } from "../src/router.js";
 
 test("forwards /responses under an OpenAI-compatible /v1 base path", () => {
   assert.equal(
@@ -29,4 +29,84 @@ test("decodes zstd-compressed request bodies from Codex Desktop", () => {
   const compressed = zstdCompressSync(payload);
 
   assert.equal(decodeBody(compressed, "zstd").toString("utf8"), payload.toString("utf8"));
+});
+
+test("converts Responses function tools to Ollama tools", () => {
+  assert.deepEqual(
+    normalizeOllamaTools([
+      {
+        type: "function",
+        name: "get_weather",
+        description: "Fetch weather",
+        parameters: {
+          type: "object",
+          properties: {
+            location: { type: "string" },
+          },
+          required: ["location"],
+        },
+      },
+    ]),
+    [
+      {
+        type: "function",
+        function: {
+          name: "get_weather",
+          description: "Fetch weather",
+          parameters: {
+            type: "object",
+            properties: {
+              location: { type: "string" },
+            },
+            required: ["location"],
+          },
+        },
+      },
+    ],
+  );
+});
+
+test("converts nested function tools to Ollama tools", () => {
+  assert.deepEqual(
+    normalizeOllamaTools([
+      {
+        type: "function",
+        function: {
+          name: "read_file",
+          parameters: {
+            type: "object",
+            properties: {
+              path: { type: "string" },
+            },
+          },
+        },
+      },
+    ]),
+    [
+      {
+        type: "function",
+        function: {
+          name: "read_file",
+          description: "",
+          parameters: {
+            type: "object",
+            properties: {
+              path: { type: "string" },
+            },
+          },
+        },
+      },
+    ],
+  );
+});
+
+test("converts hosted search tools to emulated Ollama tools", () => {
+  assert.deepEqual(
+    normalizeOllamaTools([
+      { type: "web_search" },
+      { type: "tool_search" },
+      { type: "web_search_preview" },
+    ]).map((tool) => tool.function.name),
+    ["web_search", "tool_search"],
+  );
 });

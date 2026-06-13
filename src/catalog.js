@@ -30,13 +30,13 @@ export function localModelFromTemplate(template, ollamaModel, priority) {
   model.max_context_window = model.context_window;
   model.default_reasoning_level = "none";
   model.supported_reasoning_levels = [];
-  model.supports_reasoning_summaries = false;
+  model.supports_reasoning_summaries = true;
   model.support_verbosity = false;
   model.default_verbosity = "low";
   model.supports_search_tool = false;
   model.input_modalities = ["text"];
   model.web_search_tool_type = "text";
-  model.use_responses_lite = true;
+  model.use_responses_lite = false;
   model.shell_type = "shell_command";
   return model;
 }

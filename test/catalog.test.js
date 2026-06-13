@@ -43,6 +43,8 @@ test("builds a merged catalog and route table", async () => {
   assert.equal(result.routes["ollama/llama3.2:latest"].upstreamModel, "llama3.2:latest");
   assert.equal(result.catalog.models[1].supports_search_tool, false);
   assert.equal(result.catalog.models[1].web_search_tool_type, "text");
+  assert.equal(result.catalog.models[1].supports_reasoning_summaries, true);
+  assert.equal(result.catalog.models[1].use_responses_lite, false);
 });
 
 test("keeps cloud catalog usable if Ollama is unavailable", async () => {

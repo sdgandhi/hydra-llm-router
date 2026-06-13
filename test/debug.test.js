@@ -33,6 +33,8 @@ test("summarizes request body without retaining prompt content", () => {
     inputItems: 1,
     hasTools: true,
     toolCount: 1,
+    functionToolCount: 1,
+    toolTypes: ["function"],
     keys: ["input", "model", "stream", "tools"],
   });
 });
