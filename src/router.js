@@ -1,8 +1,10 @@
 import { execFile } from "node:child_process";
 import { constants as fsConstants } from "node:fs";
 import { access, readFile } from "node:fs/promises";
+import net from "node:net";
 import { homedir } from "node:os";
 import { delimiter, isAbsolute, join } from "node:path";
+import tls from "node:tls";
 import { promisify } from "node:util";
 import { brotliDecompressSync, gunzipSync, inflateSync, zstdDecompressSync } from "node:zlib";
 import { debugLogAccess, debugLogError, debugLogRequest, debugLogUpgrade, debugLogUpstream } from "./debug.js";
@@ -913,6 +915,27 @@ function forwardedHeaders(sourceHeaders) {
   return headers;
 }
 
+function forwardedUpgradeHeaders(sourceHeaders, upstreamUrl, apiKey) {
+  const headers = { host: upstreamUrl.host };
+  for (const [key, value] of Object.entries(sourceHeaders)) {
+    const normalized = key.toLowerCase();
+    if (
+      normalized === "host" ||
+      normalized === "content-length" ||
+      normalized === "content-encoding" ||
+      normalized === "transfer-encoding"
+    ) {
+      continue;
+    }
+    if (value == null) continue;
+    headers[key] = Array.isArray(value) ? value.join(", ") : String(value);
+  }
+  headers.connection = "Upgrade";
+  headers.upgrade = "websocket";
+  if (apiKey) headers.authorization = `Bearer ${apiKey}`;
+  return headers;
+}
+
 export function upstreamResponsesUrl(requestPath, openaiBaseUrl) {
   const base = new URL(openaiBaseUrl);
   const basePath = base.pathname.replace(/\/+$/g, "");
@@ -920,6 +943,80 @@ export function upstreamResponsesUrl(requestPath, openaiBaseUrl) {
   base.pathname = `${basePath}${requestSuffix}`;
   base.search = "";
   return base;
+}
+
+function writeUpgradeRejection(socket, status, message) {
+  if (socket.destroyed) return;
+  socket.write(`HTTP/1.1 ${status} ${message}\r\nConnection: close\r\n\r\n`);
+  socket.destroy();
+}
+
+function writeUpstreamUpgradeRequest(upstreamSocket, req, upstreamUrl, apiKey) {
+  const target = `${upstreamUrl.pathname}${upstreamUrl.search}`;
+  upstreamSocket.write(`${req.method} ${target} HTTP/1.1\r\n`);
+  const headers = forwardedUpgradeHeaders(req.headers, upstreamUrl, apiKey);
+  for (const [key, value] of Object.entries(headers)) {
+    upstreamSocket.write(`${key}: ${value}\r\n`);
+  }
+  upstreamSocket.write("\r\n");
+}
+
+function connectUpstreamSocket(upstreamUrl) {
+  const port = Number(upstreamUrl.port || (upstreamUrl.protocol === "https:" ? 443 : 80));
+  if (upstreamUrl.protocol === "https:") {
+    return tls.connect({ host: upstreamUrl.hostname, port, servername: upstreamUrl.hostname });
+  }
+  if (upstreamUrl.protocol === "http:") {
+    return net.connect({ host: upstreamUrl.hostname, port });
+  }
+  throw new Error(`Unsupported upstream protocol for WebSocket upgrade: ${upstreamUrl.protocol}`);
+}
+
+function forwardOpenAIUpgrade({ req, socket, head, openaiBaseUrl, apiKey, debugAuth }) {
+  debugLogUpgrade({ enabled: debugAuth, req });
+  if (req.method !== "GET" || !["/responses", "/v1/responses"].includes(req.url)) {
+    writeUpgradeRejection(socket, 404, "Not Found");
+    return;
+  }
+
+  const upstreamUrl = upstreamResponsesUrl(req.url, openaiBaseUrl);
+  let upstreamSocket;
+  try {
+    upstreamSocket = connectUpstreamSocket(upstreamUrl);
+  } catch (error) {
+    debugLogError({ enabled: debugAuth, req, error, stage: "websocket_connect" });
+    writeUpgradeRejection(socket, 502, "Bad Gateway");
+    return;
+  }
+
+  let settled = false;
+  let started = false;
+  const startProxy = () => {
+    if (started) return;
+    started = true;
+    settled = true;
+    writeUpstreamUpgradeRequest(upstreamSocket, req, upstreamUrl, apiKey);
+    if (head?.length) upstreamSocket.write(head);
+    socket.pipe(upstreamSocket);
+    upstreamSocket.pipe(socket);
+    debugLogUpstream({
+      enabled: debugAuth,
+      req,
+      upstream: { provider: "openai", url: upstreamUrl.toString(), protocol: "websocket" },
+      stage: "upgrade",
+    });
+  };
+  const fail = (error) => {
+    debugLogError({ enabled: debugAuth, req, error, stage: "websocket_proxy" });
+    if (!settled) writeUpgradeRejection(socket, 502, "Bad Gateway");
+    else socket.destroy();
+    upstreamSocket.destroy();
+  };
+
+  if (upstreamUrl.protocol === "https:") upstreamSocket.once("secureConnect", startProxy);
+  else upstreamSocket.once("connect", startProxy);
+  upstreamSocket.once("error", fail);
+  socket.once("error", () => upstreamSocket.destroy());
 }
 
 export function createHydraHandler({ paths, ollamaBaseUrl, openaiBaseUrl, apiKey, debugAuth = false }) {
@@ -983,10 +1080,8 @@ export function createHydraHandler({ paths, ollamaBaseUrl, openaiBaseUrl, apiKey
     }
   }
 
-  hydraHandler.handleUpgrade = (req, socket) => {
-    debugLogUpgrade({ enabled: debugAuth, req });
-    socket.write("HTTP/1.1 426 Upgrade Required\r\nConnection: close\r\n\r\n");
-    socket.destroy();
+  hydraHandler.handleUpgrade = (req, socket, head) => {
+    forwardOpenAIUpgrade({ req, socket, head, openaiBaseUrl, apiKey, debugAuth });
   };
 
   return hydraHandler;

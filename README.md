@@ -132,4 +132,4 @@ Hydra supports the core text Responses flow for:
 - OpenAI cloud models through Codex Desktop's ChatGPT-login backend
 - Ollama local chat models through `/api/chat`
 
-The WebSocket prewarm attempt from Codex Desktop is logged and rejected with `426`; the app falls back to `POST /responses`, which is the working path.
+The WebSocket upgrade attempt from Codex Desktop is proxied to the configured cloud upstream. Local Ollama routes continue to use the HTTP `POST /responses` path.

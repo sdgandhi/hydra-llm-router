@@ -16,10 +16,10 @@ This project is a local Codex Desktop model router. Keep changes small and valid
 - The correct default cloud upstream for Desktop OAuth is `https://chatgpt.com/backend-api/codex`.
 - Forwarding Desktop OAuth tokens to `https://api.openai.com/v1` returns `401`; only use that upstream with `OPENAI_API_KEY`.
 - Desktop sends `POST /responses` for the working request path.
-- Desktop may first attempt a WebSocket upgrade to `/responses` with `openai-beta: responses_websockets=2026-02-06`; rejecting it with `426` is acceptable because Desktop falls back to HTTP POST.
+- Desktop may first attempt a WebSocket upgrade to `/responses` with `openai-beta: responses_websockets=2026-02-06`; proxy cloud upgrades to the configured OpenAI upstream.
 - Desktop compresses request bodies with `content-encoding: zstd`; always decode before JSON parsing.
 - Forward cloud requests transparently enough to keep Codex-specific headers such as `chatgpt-account-id`, `session-id`, `x-codex-*`, `openai-beta`, and `authorization`.
-- Strip hop-by-hop and stale body headers before upstream forwarding: `host`, `connection`, `content-length`, `content-encoding`, `transfer-encoding`, `upgrade`, and WebSocket headers.
+- Strip hop-by-hop and stale body headers before HTTP upstream forwarding: `host`, `connection`, `content-length`, `content-encoding`, `transfer-encoding`, `upgrade`, and WebSocket headers. For WebSocket upgrades, preserve upgrade headers and replace only stale request framing such as `host` and body length/encoding headers.
 
 ## Catalog Notes
 

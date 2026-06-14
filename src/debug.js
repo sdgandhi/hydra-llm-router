@@ -2,7 +2,7 @@ import { appendFileSync } from "node:fs";
 
 const SENSITIVE_HEADER_RE = /authorization|cookie|token|key|secret|session|csrf|jwt|credential/i;
 const INTERESTING_HEADER_RE =
-  /authorization|cookie|token|key|secret|session|csrf|jwt|credential|openai|chatgpt|codex|organization|project|account|user-agent|content-type|content-length|content-encoding|transfer-encoding|accept/i;
+  /authorization|cookie|token|key|secret|session|csrf|jwt|credential|openai|chatgpt|codex|organization|project|account|user-agent|content-type|content-length|content-encoding|transfer-encoding|accept|upgrade|websocket/i;
 
 function redactValue(value) {
   if (Array.isArray(value)) return value.map(redactValue);
