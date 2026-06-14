@@ -2,6 +2,7 @@ import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 import { buildCatalog } from "./catalog.js";
+import { emulatedToolStatuses } from "./router.js";
 
 export function expandHome(value) {
   if (!value || value === "~") return homedir();
@@ -44,10 +45,12 @@ export async function writeJsonAtomic(filePath, value) {
 
 export async function refreshCatalog(config) {
   const sourceCatalog = await readJson(config.paths.codexModelCachePath);
+  const toolStatuses = await emulatedToolStatuses();
   const catalog = await buildCatalog({
     sourceCatalog,
     ollamaBaseUrl: config.ollamaBaseUrl,
     fetchImpl: globalThis.fetch,
+    webSearchReady: toolStatuses.some((tool) => tool.name === "web_search" && tool.status === "ready"),
   });
   await writeJsonAtomic(config.paths.catalogPath, catalog.catalog);
   await writeJsonAtomic(config.paths.routesPath, catalog.routes);
@@ -86,15 +89,22 @@ export function insertHydraConfig(toml, config) {
 }
 
 export function removeManagedHydraConfig(toml) {
-  const withoutTopLevel = toml
+  const firstTable = toml.search(/^\[/m);
+  const topLevel = firstTable === -1 ? toml : toml.slice(0, firstTable);
+  const tables = firstTable === -1 ? "" : toml.slice(firstTable);
+  const cleanedTopLevel = topLevel
     .split("\n")
     .filter((line) => {
       const trimmed = line.trim();
-      return !trimmed.startsWith("model_catalog_json =") && !trimmed.startsWith("openai_base_url =");
+      return (
+        !trimmed.startsWith("model_catalog_json =") &&
+        !trimmed.startsWith("openai_base_url =") &&
+        !/^model_provider\s*=\s*(['"])hydra\1(?:\s*(?:#.*)?)?$/.test(trimmed)
+      );
     })
     .join("\n");
 
-  return withoutTopLevel.replace(/\n?\[model_providers\.hydra\]\n(?:[^\n[]+\n?)*/g, "\n");
+  return `${cleanedTopLevel}${tables}`.replace(/\n?\[model_providers\.hydra\]\n(?:[^\n[]+\n?)*/g, "\n");
 }
 
 export async function installHydraConfig(config) {

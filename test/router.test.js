@@ -1,7 +1,14 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { zstdCompressSync } from "node:zlib";
-import { decodeBody, emulatedToolStatuses, normalizeOllamaTools, upstreamResponsesUrl } from "../src/router.js";
+import {
+  buildOllamaChatBody,
+  decodeBody,
+  emulatedToolStatuses,
+  normalizeOllamaTools,
+  normalizeResponsesInput,
+  upstreamResponsesUrl,
+} from "../src/router.js";
 
 test("forwards /responses under an OpenAI-compatible /v1 base path", () => {
   assert.equal(
@@ -109,6 +116,98 @@ test("converts hosted search tools to emulated Ollama tools", () => {
     ]).map((tool) => tool.function.name),
     ["web_search", "tool_search"],
   );
+});
+
+test("converts base64 Responses image inputs to Ollama images", () => {
+  assert.deepEqual(
+    normalizeResponsesInput(
+      [
+        {
+          role: "user",
+          content: [
+            { type: "input_text", text: "describe this" },
+            { type: "input_image", image_url: "data:image/png;base64,abc123" },
+          ],
+        },
+      ],
+      { allowImages: true },
+    ),
+    [{ role: "user", content: "describe this", images: ["abc123"] }],
+  );
+});
+
+test("rejects image inputs when Ollama route does not support vision", () => {
+  assert.throws(
+    () =>
+      normalizeResponsesInput(
+        [
+          {
+            role: "user",
+            content: [{ type: "input_image", image_url: "data:image/png;base64,abc123" }],
+          },
+        ],
+        { allowImages: false },
+      ),
+    /does not advertise vision support/,
+  );
+});
+
+test("rejects unsupported image references instead of dropping them", () => {
+  assert.throws(
+    () =>
+      normalizeResponsesInput(
+        [
+          {
+            role: "user",
+            content: [{ type: "input_image", file_id: "file_123" }],
+          },
+        ],
+        { allowImages: true },
+      ),
+    /expected a base64 string or data URL image/,
+  );
+});
+
+test("maps non-none reasoning effort to Ollama think for thinking routes", () => {
+  const body = buildOllamaChatBody({
+    body: {
+      model: "ollama/thinking",
+      input: "think briefly",
+      reasoning: { effort: "medium" },
+    },
+    route: { upstreamModel: "thinking", capabilities: { thinking: true, tools: true } },
+    stream: false,
+  });
+
+  assert.equal(body.think, true);
+});
+
+test("does not send Ollama think for none reasoning effort", () => {
+  const body = buildOllamaChatBody({
+    body: {
+      model: "ollama/thinking",
+      input: "answer directly",
+      reasoning: { effort: "none" },
+    },
+    route: { upstreamModel: "thinking", capabilities: { thinking: true, tools: true } },
+    stream: false,
+  });
+
+  assert.equal("think" in body, false);
+});
+
+test("omits Ollama tools when route capabilities do not support tools", () => {
+  const body = buildOllamaChatBody({
+    body: {
+      model: "ollama/plain",
+      input: "hello",
+      tools: [{ type: "web_search" }],
+    },
+    route: { upstreamModel: "plain", capabilities: { tools: false } },
+    stream: false,
+  });
+
+  assert.equal("tools" in body, false);
 });
 
 test("reports emulated web search as ready when command exists", async () => {

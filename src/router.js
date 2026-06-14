@@ -93,20 +93,83 @@ async function loadRoutes(paths) {
   return JSON.parse(await readFile(paths.routesPath, "utf8"));
 }
 
-function normalizeResponsesInput(input) {
+function imageDataFromPart(part) {
+  const source =
+    part.image_url?.url ??
+    part.image_url ??
+    part.url ??
+    part.data ??
+    part.b64_json ??
+    part.image_base64 ??
+    part.base64;
+  if (typeof source !== "string" || !source) {
+    throw new Error("Unsupported image input for Ollama: expected a base64 string or data URL image.");
+  }
+  const dataUrlMatch = source.match(/^data:[^;,]+;base64,(.+)$/i);
+  return dataUrlMatch ? dataUrlMatch[1] : source;
+}
+
+function isImagePart(part) {
+  return (
+    part?.type === "input_image" ||
+    part?.type === "image" ||
+    part?.type === "image_url" ||
+    part?.image_url != null ||
+    part?.b64_json != null ||
+    part?.image_base64 != null
+  );
+}
+
+export function normalizeResponsesInput(input, { allowImages = false } = {}) {
   if (typeof input === "string") return [{ role: "user", content: input }];
   if (!Array.isArray(input)) return [{ role: "user", content: JSON.stringify(input ?? "") }];
 
   return input.map((item) => {
     const role = item.role ?? "user";
-    const content = Array.isArray(item.content)
-      ? item.content
-          .map((part) => part.text ?? part.input_text ?? part.output_text ?? "")
-          .filter(Boolean)
-          .join("\n")
-      : item.content ?? "";
-    return { role, content: String(content) };
+    if (!Array.isArray(item.content)) return { role, content: String(item.content ?? "") };
+
+    const images = [];
+    const content = item.content
+      .map((part) => {
+        if (isImagePart(part)) {
+          if (!allowImages) {
+            throw new Error("Ollama model does not advertise vision support for image inputs.");
+          }
+          images.push(imageDataFromPart(part));
+          return "";
+        }
+        return part.text ?? part.input_text ?? part.output_text ?? "";
+      })
+      .filter(Boolean)
+      .join("\n");
+    const message = { role, content: String(content) };
+    if (images.length) message.images = images;
+    return message;
   });
+}
+
+function requestedThinking(body) {
+  const effort = body?.reasoning?.effort ?? body?.reasoning_effort ?? body?.reasoning_level;
+  return typeof effort === "string" && effort.toLowerCase() !== "none";
+}
+
+export function buildOllamaChatBody({ body, route, stream, messages = null }) {
+  const capabilities = route.capabilities ?? {};
+  const normalizedMessages = messages ?? normalizeResponsesInput(body.input, { allowImages: Boolean(capabilities.vision) });
+  const tools = normalizeOllamaTools(body.tools);
+  const ollamaBody = {
+    model: route.upstreamModel,
+    messages: normalizedMessages,
+    stream,
+    options: {
+      temperature: body.temperature,
+      top_p: body.top_p,
+      num_predict: body.max_output_tokens,
+    },
+  };
+  if (tools.length && capabilities.tools !== false) ollamaBody.tools = tools;
+  if (capabilities.thinking && requestedThinking(body)) ollamaBody.think = true;
+  return ollamaBody;
 }
 
 function sseHeaders(res) {
@@ -455,22 +518,20 @@ function writeResponseStreamDone(res, { id, model, output }) {
 async function callOllama({ req, body, route, ollamaBaseUrl, res, debugAuth }) {
   const stream = body.stream !== false;
   const id = responseId();
-  const tools = normalizeOllamaTools(body.tools);
-  const messages = normalizeResponsesInput(body.input);
   const url = new URL("/api/chat", ollamaBaseUrl);
+  let messages;
+  try {
+    messages = normalizeResponsesInput(body.input, { allowImages: Boolean(route.capabilities?.vision) });
+  } catch (error) {
+    if (error.message.startsWith("Unsupported image input") || error.message.startsWith("Ollama model does not")) {
+      jsonResponse(req, res, 400, { error: { message: error.message } }, debugAuth, { route });
+      return;
+    }
+    throw error;
+  }
 
   async function fetchOllama({ stream }) {
-    const ollamaBody = {
-      model: route.upstreamModel,
-      messages,
-      stream,
-      options: {
-        temperature: body.temperature,
-        top_p: body.top_p,
-        num_predict: body.max_output_tokens,
-      },
-    };
-    if (tools.length) ollamaBody.tools = tools;
+    const ollamaBody = buildOllamaChatBody({ body, route, stream, messages });
 
     debugLogUpstream({
       enabled: debugAuth,
@@ -481,7 +542,9 @@ async function callOllama({ req, body, route, ollamaBaseUrl, res, debugAuth }) {
         url: url.toString(),
         requestBytes: Buffer.byteLength(JSON.stringify(ollamaBody)),
         stream,
-        toolCount: tools.length,
+        toolCount: Array.isArray(ollamaBody.tools) ? ollamaBody.tools.length : 0,
+        images: ollamaBody.messages.reduce((count, message) => count + (message.images?.length ?? 0), 0),
+        think: Boolean(ollamaBody.think),
       },
       stage: "request",
     });
@@ -506,7 +569,16 @@ async function callOllama({ req, body, route, ollamaBaseUrl, res, debugAuth }) {
     return response;
   }
 
-  let response = await fetchOllama({ stream });
+  let response;
+  try {
+    response = await fetchOllama({ stream });
+  } catch (error) {
+    if (error.message.startsWith("Unsupported image input") || error.message.startsWith("Ollama model does not")) {
+      jsonResponse(req, res, 400, { error: { message: error.message } }, debugAuth, { route });
+      return;
+    }
+    throw error;
+  }
 
   if (!response.ok) {
     const text = await response.text();
@@ -632,14 +704,22 @@ async function callOllama({ req, body, route, ollamaBaseUrl, res, debugAuth }) {
           },
         })),
       });
-      for (const toolCall of emulatedCalls) {
-        const result = await executeEmulatedTool({
-          name: toolCall.name,
-          argumentsText: toolCall.argumentsText,
-          requestTools: body.tools,
-        });
-        messages.push({ role: "tool", content: result.slice(0, MAX_TOOL_RESULT_CHARS) });
-      }
+      messages.push(
+        ...(
+          await Promise.all(
+            emulatedCalls.map(async (toolCall) => ({
+              role: "tool",
+              content: (
+                await executeEmulatedTool({
+                  name: toolCall.name,
+                  argumentsText: toolCall.argumentsText,
+                  requestTools: body.tools,
+                })
+              ).slice(0, MAX_TOOL_RESULT_CHARS),
+            })),
+          )
+        ),
+      );
       response = await fetchOllama({ stream: true });
       if (!response.ok) {
         const text = await response.text();

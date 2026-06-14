@@ -24,10 +24,27 @@ js_repl = false
   assert.match(output, /model = "gpt-5.5"/);
   assert.match(output, /\[projects\."\/tmp\/example"\]/);
   assert.match(output, /\[features\]/);
-  assert.match(output, /model_provider = "hydra"/);
+  assert.doesNotMatch(output, /model_provider = "hydra"/);
   assert.doesNotMatch(output, /model_catalog_json/);
   assert.doesNotMatch(output, /openai_base_url/);
   assert.doesNotMatch(output, /\[model_providers\.hydra\]/);
+});
+
+test("preserves non-hydra provider and table-scoped matching keys", () => {
+  const input = `model_provider = "openai"
+
+[projects."/tmp/example"]
+model_provider = "hydra"
+model_catalog_json = "/project/catalog.json"
+openai_base_url = "http://project.example"
+`;
+
+  const output = removeManagedHydraConfig(input);
+  assert.match(output, /model_provider = "openai"/);
+  assert.match(output, /\[projects\."\/tmp\/example"\]/);
+  assert.match(output, /model_provider = "hydra"/);
+  assert.match(output, /model_catalog_json = "\/project\/catalog\.json"/);
+  assert.match(output, /openai_base_url = "http:\/\/project\.example"/);
 });
 
 test("emits the single provider desktop config patch", () => {
