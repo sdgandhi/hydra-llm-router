@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import {
   defaultPaths,
   installHydraConfig,
+  loadCatalog,
   loadHydraConfig,
   refreshCatalog,
   restoreConfig,
@@ -12,11 +13,13 @@ import {
   writePidFile,
   removePidFile,
 } from "./config.js";
+import { catalogModelTitles } from "./catalog.js";
+import { createAppServerBridge, parseAppToolServers } from "./app-server.js";
 import { configureDebugLog, writeDebugLine } from "./debug.js";
 import { menuBarStatusItems, startMenuBar } from "./menubar.js";
 import { createHydraHandler, emulatedToolStatuses } from "./router.js";
 
-const commands = new Set(["serve", "stop", "refresh", "install", "restore", "status"]);
+const commands = new Set(["serve", "stop", "refresh", "install", "restore", "status", "models"]);
 
 function usage() {
   return `Usage: hydra <command> [options]
@@ -28,12 +31,16 @@ Commands:
   install     Back up Codex config, refresh catalog, and point Codex at Hydra
   restore     Restore the saved Codex config backup
   status      Print configured paths and router settings
+  models      Print detected catalog models
 
 Options:
   --port <n>               Router port (default: 3847)
   --codex-home <path>      Codex home (default: ~/.codex)
   --ollama-url <url>       Ollama base URL (default: http://127.0.0.1:11434)
   --openai-base-url <url>  Cloud upstream URL (default: https://chatgpt.com/backend-api/codex)
+  --app-tools <auto|off>   Expose Codex app-server tools to local models (default: auto)
+  --app-tool-servers <csv> App-server MCP servers to expose (default: codex_apps)
+  --codex-bin <path>       Codex CLI binary for app-server tools (default: codex)
   --debug-auth            Log redacted request auth/header diagnostics
   --no-menubar            Do not show the macOS menu bar item while serving
 `;
@@ -76,6 +83,9 @@ export function buildConfig(options = {}) {
       options.openai_base_url ??
       process.env.HYDRA_OPENAI_BASE_URL ??
       "https://chatgpt.com/backend-api/codex",
+    appTools: options.app_tools ?? process.env.HYDRA_APP_TOOLS ?? "auto",
+    appToolServers: parseAppToolServers(options.app_tool_servers ?? process.env.HYDRA_APP_TOOL_SERVERS),
+    codexBin: options.codex_bin ?? process.env.HYDRA_CODEX_BIN ?? "codex",
     debugAuth: Boolean(options.debug_auth ?? process.env.HYDRA_DEBUG_AUTH),
     noMenuBar: Boolean(options.no_menubar),
   };
@@ -136,14 +146,37 @@ export async function main() {
     return;
   }
 
+  if (parsed.command === "models") {
+    const catalog = await loadCatalog(config.paths);
+    const modelTitles = catalogModelTitles(catalog);
+    if (!modelTitles.length) {
+      console.log(`No models detected in ${config.paths.catalogPath}`);
+      return;
+    }
+
+    console.log(`Detected ${modelTitles.length} models in ${config.paths.catalogPath}:`);
+    for (const title of modelTitles) {
+      console.log(`- ${title}`);
+    }
+    return;
+  }
+
+  const appServerBridge = createAppServerBridge({
+    enabled: config.appTools !== "off",
+    codexBin: config.codexBin,
+    toolServers: config.appToolServers,
+    cwd: process.cwd(),
+  });
   const handler = createHydraHandler({
     paths: config.paths,
     ollamaBaseUrl: config.ollamaBaseUrl,
     openaiBaseUrl: config.openaiBaseUrl,
     apiKey: process.env.OPENAI_API_KEY,
     debugAuth: config.debugAuth,
+    appServerBridge,
   });
   config.emulatedToolStatuses = await emulatedToolStatuses();
+  config.appToolStatus = await appServerBridge.status();
 
   if (config.debugAuth) {
     configureDebugLog(config.paths.logPath);
@@ -154,6 +187,8 @@ export async function main() {
       logPath: config.paths.logPath,
     });
   }
+
+  config.catalog = await loadCatalog(config.paths);
 
   const server = createServer(handler);
   let menuBar = null;
@@ -166,6 +201,7 @@ export async function main() {
       config,
       server,
       menuBar,
+      appServerBridge,
       signal,
       restoreOnQuit,
     });
@@ -174,6 +210,7 @@ export async function main() {
   server.on("upgrade", handler.handleUpgrade);
   server.on("error", async (error) => {
     logProcessError("server_error", error);
+    appServerBridge.close();
     menuBar?.stop();
     await removePidFile(config.paths, process.pid);
     console.error(error.stack || error.message);
@@ -184,6 +221,7 @@ export async function main() {
   process.on("SIGTERM", () => shutdown({ signal: "SIGTERM" }));
   process.on("uncaughtException", async (error) => {
     logProcessError("uncaught_exception", error);
+    appServerBridge.close();
     menuBar?.stop();
     await removePidFile(config.paths, process.pid);
     process.exit(1);
@@ -191,6 +229,7 @@ export async function main() {
   process.on("unhandledRejection", async (reason) => {
     const error = reason instanceof Error ? reason : new Error(String(reason));
     logProcessError("unhandled_rejection", error);
+    appServerBridge.close();
     menuBar?.stop();
     await removePidFile(config.paths, process.pid);
     process.exit(1);
@@ -228,6 +267,7 @@ export async function shutdownHydra({
   config,
   server,
   menuBar,
+  appServerBridge = null,
   signal,
   restoreOnQuit = false,
   restoreImpl = restoreConfig,
@@ -258,6 +298,7 @@ export async function shutdownHydra({
 
   await closeServer(server);
   await removePidFileImpl(config.paths, process.pid);
+  appServerBridge?.close();
   menuBar?.stop();
   exitImpl(0);
   return { restoreStatus };

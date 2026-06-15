@@ -17,14 +17,7 @@ final class HydraMenuDelegate: NSObject, NSApplicationDelegate {
 
     let menu = NSMenu()
     for statusItem in statusItems() {
-      let kind = statusItem["kind"] as? String ?? "info"
-      let title = statusItem["title"] as? String ?? ""
-      switch kind {
-      case "separator":
-        menu.addItem(NSMenuItem.separator())
-      default:
-        addDisabled(title, to: menu)
-      }
+      addStatusItem(statusItem, to: menu)
     }
     menu.addItem(NSMenuItem.separator())
 
@@ -46,6 +39,29 @@ final class HydraMenuDelegate: NSObject, NSApplicationDelegate {
     let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
     item.isEnabled = false
     menu.addItem(item)
+  }
+
+  private func addStatusItem(_ statusItem: [String: Any], to menu: NSMenu) {
+    let kind = statusItem["kind"] as? String ?? "info"
+    let title = statusItem["title"] as? String ?? ""
+
+    switch kind {
+    case "separator":
+      menu.addItem(NSMenuItem.separator())
+    case "submenu":
+      let submenuItem = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+      let submenu = NSMenu(title: title)
+      for child in statusItem["items"] as? [[String: Any]] ?? [] {
+        addStatusItem(child, to: submenu)
+      }
+      if submenu.items.isEmpty {
+        addDisabled("No models detected", to: submenu)
+      }
+      submenuItem.submenu = submenu
+      menu.addItem(submenuItem)
+    default:
+      addDisabled(title, to: menu)
+    }
   }
 
   private func configureStatusButton(_ button: NSStatusBarButton?) {

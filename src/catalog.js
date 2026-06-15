@@ -52,6 +52,14 @@ function routeCapabilities(modelInfo, webSearchReady) {
   };
 }
 
+export function catalogModelTitle(model) {
+  return model?.slug ?? model?.display_name ?? "(unknown model)";
+}
+
+export function catalogModelTitles(catalog) {
+  return Array.isArray(catalog?.models) ? catalog.models.map(catalogModelTitle) : [];
+}
+
 export function localModelFromTemplate(template, ollamaModel, priority, { modelInfo = null, webSearchReady = false } = {}) {
   const name = ollamaModel.name || ollamaModel.model;
   const capabilities = routeCapabilities(modelInfo, webSearchReady);

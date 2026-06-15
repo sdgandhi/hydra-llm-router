@@ -21,6 +21,7 @@ node src/cli.js serve
 node src/cli.js stop
 node src/cli.js restore
 node src/cli.js status
+node src/cli.js models
 ```
 
 `install` backs up `~/.codex/config.toml`, refreshes the merged catalog, and points Codex Desktop at Hydra. `restore` writes the saved backup back.
@@ -30,6 +31,8 @@ On macOS, `serve` shows a Hydra menu bar item with runtime details. Use `Quit Hy
 ```sh
 node src/cli.js serve --no-menubar
 ```
+
+The menu bar and `models` command both show the detected catalog entries Hydra has written, including the Ollama models under the `ollama/` namespace.
 
 You can also double-click `Hydra.command` from Finder. It runs `install`, starts `serve` in the background, writes launcher output to `~/.codex/hydra/launcher.log`, and hides Terminal after startup.
 
@@ -55,6 +58,24 @@ ollama/llama3.2:latest
 ```
 
 The prefix avoids name collisions and lets Hydra choose the correct upstream deterministically.
+
+## App Tools
+
+By default, `serve` starts a local `codex app-server --listen stdio://` bridge and exposes tools from the `codex_apps` MCP server to Ollama routes. That is how local models can discover and call connected apps such as Gmail through the same tool catalog Desktop uses.
+
+Disable the bridge with:
+
+```sh
+node src/cli.js serve --app-tools off
+```
+
+Expose a different app-server MCP server list with:
+
+```sh
+node src/cli.js serve --app-tool-servers codex_apps,node_repl
+```
+
+Apps that already start their own app-server, such as `twilio-voice-agent`, can keep routing model traffic through Hydra. Hydra runs its own bridge process for local model tool calls and uses the shared `~/.codex` app auth/plugins, so connector access works without needing to reach into the caller's private stdio app-server. Exact caller-thread provenance would require the app to expose or proxy its app-server thread context to Hydra.
 
 ## Cloud Auth
 
@@ -84,6 +105,9 @@ OLLAMA_BASE_URL=http://127.0.0.1:11434
 HYDRA_OPENAI_BASE_URL=https://chatgpt.com/backend-api/codex
 OPENAI_API_KEY=...
 HYDRA_OLLAMA_CONTEXT_WINDOW=32768
+HYDRA_APP_TOOLS=auto
+HYDRA_APP_TOOL_SERVERS=codex_apps
+HYDRA_CODEX_BIN=codex
 ```
 
 Generated files live under:
@@ -131,5 +155,6 @@ Hydra supports the core text Responses flow for:
 
 - OpenAI cloud models through Codex Desktop's ChatGPT-login backend
 - Ollama local chat models through `/api/chat`
+- Codex app-server tools for local Ollama models
 
-The WebSocket upgrade attempt from Codex Desktop is proxied to the configured cloud upstream. Local Ollama routes continue to use the HTTP `POST /responses` path.
+WebSocket upgrade attempts are rejected so Codex Desktop falls back to the HTTP `POST /responses` path.

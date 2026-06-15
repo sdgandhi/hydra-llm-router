@@ -1,8 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createServer as createHttpServer } from "node:http";
-import { createServer as createNetServer, connect as connectNet } from "node:net";
+import { connect as connectNet } from "node:net";
 import { once } from "node:events";
+import { mkdtemp, writeFile, rm } from "node:fs/promises";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { zstdCompressSync } from "node:zlib";
 import {
   buildOllamaChatBody,
@@ -57,29 +60,11 @@ test("rejects websocket upgrades for unknown paths", () => {
   assert.equal(socket.destroyed, true);
 });
 
-test("proxies websocket upgrades for /responses to the cloud upstream", async () => {
-  let upstreamRequest = "";
-  const upstream = createNetServer((socket) => {
-    socket.on("data", (chunk) => {
-      upstreamRequest += chunk.toString("utf8");
-      if (upstreamRequest.includes("\r\n\r\n")) {
-        socket.write(
-          "HTTP/1.1 101 Switching Protocols\r\n" +
-            "Connection: Upgrade\r\n" +
-            "Upgrade: websocket\r\n" +
-            "\r\n",
-        );
-      }
-    });
-  });
-  upstream.listen(0, "127.0.0.1");
-  await once(upstream, "listening");
-  const upstreamPort = upstream.address().port;
-
+test("rejects /responses websocket upgrades so Codex falls back to HTTP routing", async () => {
   const handler = createHydraHandler({
     paths: {},
     ollamaBaseUrl: "http://127.0.0.1:11434",
-    openaiBaseUrl: `http://127.0.0.1:${upstreamPort}/backend-api/codex`,
+    openaiBaseUrl: "https://chatgpt.com/backend-api/codex",
     apiKey: "test-key",
   });
   const hydra = createHttpServer(handler);
@@ -102,17 +87,11 @@ test("proxies websocket upgrades for /responses to the cloud upstream", async ()
   );
 
   const [response] = await once(client, "data");
-  assert.match(response.toString("utf8"), /^HTTP\/1\.1 101 Switching Protocols/);
-  assert.match(upstreamRequest, /^GET \/backend-api\/codex\/responses HTTP\/1\.1\r\n/);
-  assert.match(upstreamRequest, new RegExp(`host: 127\\.0\\.0\\.1:${upstreamPort}`, "i"));
-  assert.match(upstreamRequest, /authorization: Bearer test-key/i);
-  assert.match(upstreamRequest, /openai-beta: responses_websockets=2026-02-06/i);
-  assert.match(upstreamRequest, /sec-websocket-key: dGVzdGtleQ==/i);
+  assert.match(response.toString("utf8"), /^HTTP\/1\.1 426 Upgrade Required/);
 
   client.destroy();
   hydra.close();
-  upstream.close();
-  await Promise.allSettled([once(hydra, "close"), once(upstream, "close")]);
+  await Promise.allSettled([once(hydra, "close")]);
 });
 
 test("decodes zstd-compressed request bodies from Codex Desktop", () => {
@@ -294,6 +273,200 @@ test("omits Ollama tools when route capabilities do not support tools", () => {
   assert.equal("tools" in body, false);
 });
 
+test("routes local app tool calls through the App Server bridge", async () => {
+  const tempDir = await mkdtemp(join(tmpdir(), "hydra-router-test-"));
+  const routesPath = join(tempDir, "routes.json");
+  await writeFile(
+    routesPath,
+    JSON.stringify({
+      "ollama/tool-model": {
+        provider: "ollama",
+        upstreamModel: "tool-model",
+        capabilities: { tools: true },
+      },
+    }),
+  );
+
+  const appTool = {
+    type: "function",
+    function: {
+      name: "gmail_search_emails",
+      description: "Search Gmail",
+      parameters: { type: "object", properties: { query: { type: "string" } } },
+    },
+    _hydraAppTool: { server: "codex_apps" },
+  };
+  const bridgeCalls = [];
+  const appServerBridge = {
+    async getTools() {
+      return [appTool];
+    },
+    async callTool(call) {
+      bridgeCalls.push(call);
+      return JSON.stringify({ messages: [{ subject: "Latest email" }] });
+    },
+  };
+  const fetchCalls = [];
+  const originalFetch = globalThis.fetch;
+  let hydra = null;
+  globalThis.fetch = async (url, options) => {
+    fetchCalls.push(JSON.parse(options.body));
+    const body =
+      fetchCalls.length === 1
+        ? ndjsonStream([
+            {
+              message: {
+                tool_calls: [
+                  {
+                    function: {
+                      name: "gmail_search_emails",
+                      arguments: { query: "-in:spam -in:trash", max_results: 3 },
+                    },
+                  },
+                ],
+              },
+              done: true,
+            },
+          ])
+        : ndjsonStream([{ message: { content: "Latest email" }, done: true }]);
+    return new Response(body, { status: 200, headers: { "content-type": "application/x-ndjson" } });
+  };
+
+  try {
+    const handler = createHydraHandler({
+      paths: { routesPath },
+      ollamaBaseUrl: "http://127.0.0.1:11434",
+      openaiBaseUrl: "https://chatgpt.com/backend-api/codex",
+      appServerBridge,
+    });
+    hydra = createHttpServer(handler);
+    hydra.listen(0, "127.0.0.1");
+    await once(hydra, "listening");
+
+    const response = await originalFetch(`http://127.0.0.1:${hydra.address().port}/responses`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "ollama/tool-model",
+        stream: true,
+        input: "latest emails",
+        tools: [{ type: "tool_search" }],
+      }),
+    });
+    const text = await response.text();
+
+    assert.equal(response.status, 200);
+    assert.match(text, /Latest email/);
+    assert.equal(fetchCalls[0].tools.some((tool) => tool.function.name === "gmail_search_emails"), true);
+    assert.deepEqual(bridgeCalls, [
+      {
+        name: "gmail_search_emails",
+        argumentsText: JSON.stringify({ query: "-in:spam -in:trash", max_results: 3 }),
+      },
+    ]);
+    assert.equal(fetchCalls.length, 2);
+    assert.equal(fetchCalls[1].messages.at(-1).role, "tool");
+  } finally {
+    if (hydra?.listening) {
+      hydra.close();
+      await Promise.allSettled([once(hydra, "close")]);
+    }
+    globalThis.fetch = originalFetch;
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("routes non-streaming local app tool calls back through Ollama", async () => {
+  const tempDir = await mkdtemp(join(tmpdir(), "hydra-router-test-"));
+  const routesPath = join(tempDir, "routes.json");
+  await writeFile(
+    routesPath,
+    JSON.stringify({
+      "ollama/tool-model": {
+        provider: "ollama",
+        upstreamModel: "tool-model",
+        capabilities: { tools: true },
+      },
+    }),
+  );
+
+  const appServerBridge = {
+    async getTools() {
+      return [
+        {
+          type: "function",
+          function: {
+            name: "gmail_search_emails",
+            description: "Search Gmail",
+            parameters: { type: "object", properties: { query: { type: "string" } } },
+          },
+          _hydraAppTool: { server: "codex_apps" },
+        },
+      ];
+    },
+    async callTool() {
+      return JSON.stringify({ messages: [{ subject: "Latest email" }] });
+    },
+  };
+  const fetchCalls = [];
+  const originalFetch = globalThis.fetch;
+  let hydra = null;
+  globalThis.fetch = async (url, options) => {
+    fetchCalls.push(JSON.parse(options.body));
+    const body =
+      fetchCalls.length === 1
+        ? {
+            message: {
+              tool_calls: [
+                {
+                  function: {
+                    name: "gmail_search_emails",
+                    arguments: { query: "newer_than:1d" },
+                  },
+                },
+              ],
+            },
+          }
+        : { message: { content: "Latest email" }, prompt_eval_count: 1, eval_count: 2 };
+    return new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
+  };
+
+  try {
+    const handler = createHydraHandler({
+      paths: { routesPath },
+      ollamaBaseUrl: "http://127.0.0.1:11434",
+      openaiBaseUrl: "https://chatgpt.com/backend-api/codex",
+      appServerBridge,
+    });
+    hydra = createHttpServer(handler);
+    hydra.listen(0, "127.0.0.1");
+    await once(hydra, "listening");
+
+    const response = await originalFetch(`http://127.0.0.1:${hydra.address().port}/responses`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "ollama/tool-model",
+        stream: false,
+        input: "latest emails",
+      }),
+    });
+    const json = await response.json();
+
+    assert.equal(response.status, 200);
+    assert.equal(fetchCalls.length, 2);
+    assert.equal(fetchCalls[1].messages.at(-1).role, "tool");
+    assert.equal(json.output[0].content[0].text, "Latest email");
+  } finally {
+    if (hydra?.listening) {
+      hydra.close();
+      await Promise.allSettled([once(hydra, "close")]);
+    }
+    globalThis.fetch = originalFetch;
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
 test("reports emulated web search as ready when command exists", async () => {
   const original = process.env.HYDRA_WEB_SEARCH_COMMAND;
   process.env.HYDRA_WEB_SEARCH_COMMAND = "/bin/echo --fake-search";
@@ -323,4 +496,14 @@ test("reports emulated web search as unavailable when command is missing", async
 function restoreEnv(key, value) {
   if (value === undefined) delete process.env[key];
   else process.env[key] = value;
+}
+
+function ndjsonStream(events) {
+  const encoder = new TextEncoder();
+  return new ReadableStream({
+    start(controller) {
+      for (const event of events) controller.enqueue(encoder.encode(`${JSON.stringify(event)}\n`));
+      controller.close();
+    },
+  });
 }

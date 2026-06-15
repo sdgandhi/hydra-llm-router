@@ -1,9 +1,18 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { buildCatalog, normalizeOllamaSlug } from "../src/catalog.js";
+import { buildCatalog, catalogModelTitles, normalizeOllamaSlug } from "../src/catalog.js";
 
 test("normalizes Ollama model names under a collision-free namespace", () => {
   assert.equal(normalizeOllamaSlug("llama3.2:latest"), "ollama/llama3.2:latest");
+});
+
+test("extracts catalog model slugs in display order", () => {
+  assert.deepEqual(
+    catalogModelTitles({
+      models: [{ slug: "gpt-5.5" }, { slug: "ollama/llama3.2:latest" }],
+    }),
+    ["gpt-5.5", "ollama/llama3.2:latest"],
+  );
 });
 
 test("builds a merged catalog and route table", async () => {

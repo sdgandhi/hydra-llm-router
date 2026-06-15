@@ -2,6 +2,8 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 
+import { catalogModelTitles } from "./catalog.js";
+
 export function shouldStartMenuBar({ platform = process.platform, noMenuBar = false } = {}) {
   return platform === "darwin" && !noMenuBar;
 }
@@ -45,13 +47,23 @@ export function startMenuBar(config, { onQuit, spawnImpl = spawn } = {}) {
 }
 
 export function menuBarStatusItems(config) {
+  const modelTitles = catalogModelTitles(config.catalog);
   const items = [
     { kind: "info", title: "Hydra Running" },
+    { kind: "separator" },
+    {
+      kind: "submenu",
+      title: `Models (${modelTitles.length})`,
+      items: modelTitles.length
+        ? modelTitles.map((title) => ({ kind: "info", title }))
+        : [{ kind: "info", title: "No models detected" }],
+    },
     { kind: "separator" },
     { kind: "info", title: `Router: http://127.0.0.1:${config.port}` },
     { kind: "info", title: `Cloud: ${config.openaiBaseUrl}` },
     { kind: "info", title: `Ollama: ${config.ollamaBaseUrl}` },
     { kind: "info", title: `Emulated tools: ${emulatedToolsLabel(config.emulatedToolStatuses ?? [])}` },
+    { kind: "info", title: `App tools: ${appToolsLabel(config.appToolStatus)}` },
   ];
 
   items.push(
@@ -69,6 +81,15 @@ function emulatedToolsLabel(statuses) {
       return `${tool.name}: ${tool.status}${detail}`;
     })
     .join(", ");
+}
+
+function appToolsLabel(status) {
+  if (!status) return "unknown";
+  if (status.status === "disabled") return "disabled";
+  const servers = Array.isArray(status.servers) && status.servers.length ? status.servers.join(",") : "unknown";
+  if (status.status === "ready") return `${servers}: ${status.toolCount} ready`;
+  const detail = status.detail ? ` (${status.detail})` : "";
+  return `${servers}: ${status.status}${detail}`;
 }
 
 function handleHelperLine(line, onQuit) {

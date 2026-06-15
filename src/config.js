@@ -36,6 +36,10 @@ export async function readJson(filePath, fallback = null) {
   }
 }
 
+export async function loadCatalog(paths) {
+  return readJson(paths.catalogPath, { models: [] });
+}
+
 export async function writeJsonAtomic(filePath, value) {
   await mkdir(path.dirname(filePath), { recursive: true });
   const tempPath = `${filePath}.${process.pid}.tmp`;
@@ -58,6 +62,9 @@ export async function refreshCatalog(config) {
     port: config.port,
     ollamaBaseUrl: config.ollamaBaseUrl,
     openaiBaseUrl: config.openaiBaseUrl,
+    appTools: config.appTools,
+    appToolServers: config.appToolServers,
+    codexBin: config.codexBin,
     updatedAt: new Date().toISOString(),
   });
   return catalog;

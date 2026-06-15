@@ -1,12 +1,11 @@
 import { execFile } from "node:child_process";
 import { constants as fsConstants } from "node:fs";
 import { access, readFile } from "node:fs/promises";
-import net from "node:net";
 import { homedir } from "node:os";
 import { delimiter, isAbsolute, join } from "node:path";
-import tls from "node:tls";
 import { promisify } from "node:util";
 import { brotliDecompressSync, gunzipSync, inflateSync, zstdDecompressSync } from "node:zlib";
+import { appToolSourceFromOllamaTool } from "./app-server.js";
 import { debugLogAccess, debugLogError, debugLogRequest, debugLogUpgrade, debugLogUpstream } from "./debug.js";
 
 const execFileAsync = promisify(execFile);
@@ -155,10 +154,10 @@ function requestedThinking(body) {
   return typeof effort === "string" && effort.toLowerCase() !== "none";
 }
 
-export function buildOllamaChatBody({ body, route, stream, messages = null }) {
+export function buildOllamaChatBody({ body, route, stream, messages = null, appTools = [] }) {
   const capabilities = route.capabilities ?? {};
   const normalizedMessages = messages ?? normalizeResponsesInput(body.input, { allowImages: Boolean(capabilities.vision) });
-  const tools = normalizeOllamaTools(body.tools);
+  const tools = mergeOllamaTools(normalizeOllamaTools(body.tools), appTools);
   const ollamaBody = {
     model: route.upstreamModel,
     messages: normalizedMessages,
@@ -172,6 +171,20 @@ export function buildOllamaChatBody({ body, route, stream, messages = null }) {
   if (tools.length && capabilities.tools !== false) ollamaBody.tools = tools;
   if (capabilities.thinking && requestedThinking(body)) ollamaBody.think = true;
   return ollamaBody;
+}
+
+function mergeOllamaTools(...toolLists) {
+  const result = [];
+  const names = new Set();
+  for (const tools of toolLists) {
+    for (const tool of tools ?? []) {
+      const name = tool?.function?.name;
+      if (!name || names.has(name)) continue;
+      names.add(name);
+      result.push(tool);
+    }
+  }
+  return result;
 }
 
 function sseHeaders(res) {
@@ -387,6 +400,13 @@ async function executeEmulatedTool({ name, argumentsText, requestTools }) {
   return `Unsupported emulated tool: ${name}`;
 }
 
+function toolSourcesForSearch({ requestTools, appTools }) {
+  return [
+    ...(Array.isArray(requestTools) ? requestTools : []),
+    ...(Array.isArray(appTools) ? appTools.map(appToolSourceFromOllamaTool) : []),
+  ];
+}
+
 function writeResponseStreamStart(res, { id, model }) {
   writeSse(res, "response.created", { type: "response.created", response: responseEnvelope({ id, model }) });
   writeSse(res, "response.in_progress", {
@@ -517,10 +537,45 @@ function writeResponseStreamDone(res, { id, model, output }) {
   });
 }
 
-async function callOllama({ req, body, route, ollamaBaseUrl, res, debugAuth }) {
+async function callOllama({ req, body, route, ollamaBaseUrl, res, debugAuth, appServerBridge }) {
   const stream = body.stream !== false;
   const id = responseId();
   const url = new URL("/api/chat", ollamaBaseUrl);
+  let appTools = [];
+  try {
+    appTools = appServerBridge ? await appServerBridge.getTools() : [];
+  } catch (error) {
+    debugLogError({ enabled: debugAuth, req, error, stage: "app_tools_discovery" });
+  }
+  const appToolNames = new Set(appTools.map((tool) => tool.function?.name).filter(Boolean));
+  const searchableTools = toolSourcesForSearch({ requestTools: body.tools, appTools });
+  const isHandledToolCall = (toolCall) => EMULATED_TOOL_NAMES.has(toolCall.name) || appToolNames.has(toolCall.name);
+  const executeHandledToolCall = async (toolCall) => {
+    const content = EMULATED_TOOL_NAMES.has(toolCall.name)
+      ? await executeEmulatedTool({
+          name: toolCall.name,
+          argumentsText: toolCall.argumentsText,
+          requestTools: searchableTools,
+        })
+      : await appServerBridge.callTool(toolCall);
+    return {
+      role: "tool",
+      content: content.slice(0, MAX_TOOL_RESULT_CHARS),
+    };
+  };
+  const appendHandledToolRound = async ({ turnContent, handledCalls }) => {
+    messages.push({
+      role: "assistant",
+      content: turnContent,
+      tool_calls: handledCalls.map((toolCall) => ({
+        function: {
+          name: toolCall.name,
+          arguments: parseToolArguments(toolCall.argumentsText),
+        },
+      })),
+    });
+    messages.push(...(await Promise.all(handledCalls.map(executeHandledToolCall))));
+  };
   let messages;
   try {
     messages = normalizeResponsesInput(body.input, { allowImages: Boolean(route.capabilities?.vision) });
@@ -533,7 +588,7 @@ async function callOllama({ req, body, route, ollamaBaseUrl, res, debugAuth }) {
   }
 
   async function fetchOllama({ stream }) {
-    const ollamaBody = buildOllamaChatBody({ body, route, stream, messages });
+    const ollamaBody = buildOllamaChatBody({ body, route, stream, messages, appTools });
 
     debugLogUpstream({
       enabled: debugAuth,
@@ -545,6 +600,7 @@ async function callOllama({ req, body, route, ollamaBaseUrl, res, debugAuth }) {
         requestBytes: Buffer.byteLength(JSON.stringify(ollamaBody)),
         stream,
         toolCount: Array.isArray(ollamaBody.tools) ? ollamaBody.tools.length : 0,
+        appToolCount: appTools.length,
         images: ollamaBody.messages.reduce((count, message) => count + (message.images?.length ?? 0), 0),
         think: Boolean(ollamaBody.think),
       },
@@ -596,28 +652,59 @@ async function callOllama({ req, body, route, ollamaBaseUrl, res, debugAuth }) {
   }
 
   if (!stream) {
-    const data = await response.json();
-    const thinking = data.message?.thinking ?? "";
-    const content = data.message?.content ?? "";
-    const toolCalls = normalizeOllamaToolCalls(data.message?.tool_calls);
-    const output = [];
-    if (thinking) output.push(reasoningItem({ id, status: "completed", text: thinking }));
-    if (content || !toolCalls.length) output.push(messageItem({ id, status: "completed", text: content }));
-    toolCalls.forEach((toolCall, index) => {
-      output.push(functionCallItem({ id, index, ...toolCall }));
-    });
+    for (let rounds = 0; rounds < MAX_EMULATED_TOOL_ROUNDS; rounds += 1) {
+      const data = await response.json();
+      const thinking = data.message?.thinking ?? "";
+      const content = data.message?.content ?? "";
+      const toolCalls = normalizeOllamaToolCalls(data.message?.tool_calls);
+      const handledCalls = toolCalls.filter(isHandledToolCall);
+      const externalCalls = toolCalls.filter((toolCall) => !isHandledToolCall(toolCall));
+      if (handledCalls.length && !externalCalls.length) {
+        await appendHandledToolRound({ turnContent: content, handledCalls });
+        response = await fetchOllama({ stream: false });
+        if (!response.ok) break;
+        continue;
+      }
+      const output = [];
+      if (thinking) output.push(reasoningItem({ id, status: "completed", text: thinking }));
+      if (content || !toolCalls.length) output.push(messageItem({ id, status: "completed", text: content }));
+      toolCalls.forEach((toolCall, index) => {
+        output.push(functionCallItem({ id, index, ...toolCall }));
+      });
+      jsonResponse(
+        req,
+        res,
+        200,
+        {
+          ...responseEnvelope({ id, model: body.model, status: "completed", output }),
+          usage: {
+            input_tokens: data.prompt_eval_count ?? 0,
+            output_tokens: data.eval_count ?? 0,
+            total_tokens: (data.prompt_eval_count ?? 0) + (data.eval_count ?? 0),
+          },
+        },
+        debugAuth,
+        { route, upstream: { provider: "ollama", status: response.status } },
+      );
+      return;
+    }
+    const text = response.ok
+      ? "Stopped after repeated emulated tool calls without a final answer."
+      : await response.text();
     jsonResponse(
       req,
       res,
-      200,
-      {
-        ...responseEnvelope({ id, model: body.model, status: "completed", output }),
-        usage: {
-          input_tokens: data.prompt_eval_count ?? 0,
-          output_tokens: data.eval_count ?? 0,
-          total_tokens: (data.prompt_eval_count ?? 0) + (data.eval_count ?? 0),
-        },
-      },
+      response.ok ? 200 : response.status,
+      response.ok
+        ? {
+            ...responseEnvelope({
+              id,
+              model: body.model,
+              status: "completed",
+              output: [messageItem({ id, status: "completed", text })],
+            }),
+          }
+        : { error: { message: text || response.statusText } },
       debugAuth,
       { route, upstream: { provider: "ollama", status: response.status } },
     );
@@ -638,6 +725,7 @@ async function callOllama({ req, body, route, ollamaBaseUrl, res, debugAuth }) {
   let completedThinking = false;
   let totalToolCalls = 0;
   let emulatedToolCalls = 0;
+  let appToolCalls = 0;
   let doneReason;
   let rounds = 0;
   let completedResponse = false;
@@ -692,14 +780,17 @@ async function callOllama({ req, body, route, ollamaBaseUrl, res, debugAuth }) {
     }
 
     totalToolCalls += turnToolCalls.length;
-    const emulatedCalls = turnToolCalls.filter((toolCall) => EMULATED_TOOL_NAMES.has(toolCall.name));
-    const externalCalls = turnToolCalls.filter((toolCall) => !EMULATED_TOOL_NAMES.has(toolCall.name));
-    if (emulatedCalls.length && !externalCalls.length) {
+    const handledCalls = turnToolCalls.filter((toolCall) => EMULATED_TOOL_NAMES.has(toolCall.name) || appToolNames.has(toolCall.name));
+    const externalCalls = turnToolCalls.filter((toolCall) => !EMULATED_TOOL_NAMES.has(toolCall.name) && !appToolNames.has(toolCall.name));
+    if (handledCalls.length && !externalCalls.length) {
+      const emulatedCalls = handledCalls.filter((toolCall) => EMULATED_TOOL_NAMES.has(toolCall.name));
+      const appCalls = handledCalls.filter((toolCall) => appToolNames.has(toolCall.name));
       emulatedToolCalls += emulatedCalls.length;
+      appToolCalls += appCalls.length;
       messages.push({
         role: "assistant",
         content: turnContent,
-        tool_calls: emulatedCalls.map((toolCall) => ({
+        tool_calls: handledCalls.map((toolCall) => ({
           function: {
             name: toolCall.name,
             arguments: parseToolArguments(toolCall.argumentsText),
@@ -709,16 +800,19 @@ async function callOllama({ req, body, route, ollamaBaseUrl, res, debugAuth }) {
       messages.push(
         ...(
           await Promise.all(
-            emulatedCalls.map(async (toolCall) => ({
-              role: "tool",
-              content: (
-                await executeEmulatedTool({
-                  name: toolCall.name,
-                  argumentsText: toolCall.argumentsText,
-                  requestTools: body.tools,
-                })
-              ).slice(0, MAX_TOOL_RESULT_CHARS),
-            })),
+            handledCalls.map(async (toolCall) => {
+              const content = EMULATED_TOOL_NAMES.has(toolCall.name)
+                ? await executeEmulatedTool({
+                    name: toolCall.name,
+                    argumentsText: toolCall.argumentsText,
+                    requestTools: searchableTools,
+                  })
+                : await appServerBridge.callTool(toolCall);
+              return {
+                role: "tool",
+                content: content.slice(0, MAX_TOOL_RESULT_CHARS),
+              };
+            }),
           )
         ),
       );
@@ -812,6 +906,7 @@ async function callOllama({ req, body, route, ollamaBaseUrl, res, debugAuth }) {
       outputChars: fullText.length,
       toolCalls: totalToolCalls,
       emulatedToolCalls,
+      appToolCalls,
       doneReason,
     },
   });
@@ -915,27 +1010,6 @@ function forwardedHeaders(sourceHeaders) {
   return headers;
 }
 
-function forwardedUpgradeHeaders(sourceHeaders, upstreamUrl, apiKey) {
-  const headers = { host: upstreamUrl.host };
-  for (const [key, value] of Object.entries(sourceHeaders)) {
-    const normalized = key.toLowerCase();
-    if (
-      normalized === "host" ||
-      normalized === "content-length" ||
-      normalized === "content-encoding" ||
-      normalized === "transfer-encoding"
-    ) {
-      continue;
-    }
-    if (value == null) continue;
-    headers[key] = Array.isArray(value) ? value.join(", ") : String(value);
-  }
-  headers.connection = "Upgrade";
-  headers.upgrade = "websocket";
-  if (apiKey) headers.authorization = `Bearer ${apiKey}`;
-  return headers;
-}
-
 export function upstreamResponsesUrl(requestPath, openaiBaseUrl) {
   const base = new URL(openaiBaseUrl);
   const basePath = base.pathname.replace(/\/+$/g, "");
@@ -951,75 +1025,16 @@ function writeUpgradeRejection(socket, status, message) {
   socket.destroy();
 }
 
-function writeUpstreamUpgradeRequest(upstreamSocket, req, upstreamUrl, apiKey) {
-  const target = `${upstreamUrl.pathname}${upstreamUrl.search}`;
-  upstreamSocket.write(`${req.method} ${target} HTTP/1.1\r\n`);
-  const headers = forwardedUpgradeHeaders(req.headers, upstreamUrl, apiKey);
-  for (const [key, value] of Object.entries(headers)) {
-    upstreamSocket.write(`${key}: ${value}\r\n`);
-  }
-  upstreamSocket.write("\r\n");
-}
-
-function connectUpstreamSocket(upstreamUrl) {
-  const port = Number(upstreamUrl.port || (upstreamUrl.protocol === "https:" ? 443 : 80));
-  if (upstreamUrl.protocol === "https:") {
-    return tls.connect({ host: upstreamUrl.hostname, port, servername: upstreamUrl.hostname });
-  }
-  if (upstreamUrl.protocol === "http:") {
-    return net.connect({ host: upstreamUrl.hostname, port });
-  }
-  throw new Error(`Unsupported upstream protocol for WebSocket upgrade: ${upstreamUrl.protocol}`);
-}
-
-function forwardOpenAIUpgrade({ req, socket, head, openaiBaseUrl, apiKey, debugAuth }) {
+function rejectUpgrade({ req, socket, debugAuth }) {
   debugLogUpgrade({ enabled: debugAuth, req });
   if (req.method !== "GET" || !["/responses", "/v1/responses"].includes(req.url)) {
     writeUpgradeRejection(socket, 404, "Not Found");
     return;
   }
-
-  const upstreamUrl = upstreamResponsesUrl(req.url, openaiBaseUrl);
-  let upstreamSocket;
-  try {
-    upstreamSocket = connectUpstreamSocket(upstreamUrl);
-  } catch (error) {
-    debugLogError({ enabled: debugAuth, req, error, stage: "websocket_connect" });
-    writeUpgradeRejection(socket, 502, "Bad Gateway");
-    return;
-  }
-
-  let settled = false;
-  let started = false;
-  const startProxy = () => {
-    if (started) return;
-    started = true;
-    settled = true;
-    writeUpstreamUpgradeRequest(upstreamSocket, req, upstreamUrl, apiKey);
-    if (head?.length) upstreamSocket.write(head);
-    socket.pipe(upstreamSocket);
-    upstreamSocket.pipe(socket);
-    debugLogUpstream({
-      enabled: debugAuth,
-      req,
-      upstream: { provider: "openai", url: upstreamUrl.toString(), protocol: "websocket" },
-      stage: "upgrade",
-    });
-  };
-  const fail = (error) => {
-    debugLogError({ enabled: debugAuth, req, error, stage: "websocket_proxy" });
-    if (!settled) writeUpgradeRejection(socket, 502, "Bad Gateway");
-    else socket.destroy();
-    upstreamSocket.destroy();
-  };
-
-  if (upstreamUrl.protocol === "https:") upstreamSocket.once("secureConnect", startProxy);
-  else upstreamSocket.once("connect", startProxy);
-  upstreamSocket.once("error", fail);
-  socket.once("error", () => upstreamSocket.destroy());
+  writeUpgradeRejection(socket, 426, "Upgrade Required");
 }
 
-export function createHydraHandler({ paths, ollamaBaseUrl, openaiBaseUrl, apiKey, debugAuth = false }) {
+export function createHydraHandler({ paths, ollamaBaseUrl, openaiBaseUrl, apiKey, debugAuth = false, appServerBridge = null }) {
   async function hydraHandler(req, res) {
     try {
       if (req.method === "GET" && req.url === "/healthz") {
@@ -1069,7 +1084,7 @@ export function createHydraHandler({ paths, ollamaBaseUrl, openaiBaseUrl, apiKey
       }
 
       if (route.provider === "ollama") {
-        await callOllama({ req, body, route, ollamaBaseUrl, res, debugAuth });
+        await callOllama({ req, body, route, ollamaBaseUrl, res, debugAuth, appServerBridge });
         return;
       }
 
@@ -1080,8 +1095,8 @@ export function createHydraHandler({ paths, ollamaBaseUrl, openaiBaseUrl, apiKey
     }
   }
 
-  hydraHandler.handleUpgrade = (req, socket, head) => {
-    forwardOpenAIUpgrade({ req, socket, head, openaiBaseUrl, apiKey, debugAuth });
+  hydraHandler.handleUpgrade = (req, socket) => {
+    rejectUpgrade({ req, socket, debugAuth });
   };
 
   return hydraHandler;

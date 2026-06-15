@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { parseArgs, shutdownHydra } from "../src/cli.js";
+import { buildConfig, parseArgs, shutdownHydra } from "../src/cli.js";
 import { menuBarStatusItems } from "../src/menubar.js";
 
 test("parses --no-menubar as a serve flag", () => {
@@ -10,6 +10,16 @@ test("parses --no-menubar as a serve flag", () => {
   });
 });
 
+test("parses app tool bridge flags", () => {
+  assert.deepEqual(parseArgs(["serve", "--app-tools", "off", "--app-tool-servers", "codex_apps,node_repl"]), {
+    command: "serve",
+    options: { app_tools: "off", app_tool_servers: "codex_apps,node_repl" },
+  });
+  const config = buildConfig({ app_tool_servers: "codex_apps,node_repl", codex_bin: "/tmp/codex" });
+  assert.equal(config.codexBin, "/tmp/codex");
+  assert.deepEqual(config.appToolServers, ["codex_apps", "node_repl"]);
+});
+
 test("serve status items match the menubar dropdown content", () => {
   assert.deepEqual(
     menuBarStatusItems({
@@ -17,10 +27,21 @@ test("serve status items match the menubar dropdown content", () => {
       openaiBaseUrl: "https://chatgpt.com/backend-api/codex",
       ollamaBaseUrl: "http://127.0.0.1:11434",
       debugAuth: true,
+      catalog: {
+        models: [
+          { slug: "gpt-5.5" },
+          { slug: "ollama/llama3.2:latest" },
+        ],
+      },
       emulatedToolStatuses: [
         { name: "web_search", status: "unavailable", detail: "no executable search command found" },
         { name: "tool_search", status: "ready" },
       ],
+      appToolStatus: {
+        status: "ready",
+        toolCount: 196,
+        servers: ["codex_apps"],
+      },
       paths: {
         logPath: "/tmp/hydra.log",
         codexConfigPath: "/tmp/config.toml",
@@ -29,6 +50,15 @@ test("serve status items match the menubar dropdown content", () => {
     [
       { kind: "info", title: "Hydra Running" },
       { kind: "separator" },
+      {
+        kind: "submenu",
+        title: "Models (2)",
+        items: [
+          { kind: "info", title: "gpt-5.5" },
+          { kind: "info", title: "ollama/llama3.2:latest" },
+        ],
+      },
+      { kind: "separator" },
       { kind: "info", title: "Router: http://127.0.0.1:3847" },
       { kind: "info", title: "Cloud: https://chatgpt.com/backend-api/codex" },
       { kind: "info", title: "Ollama: http://127.0.0.1:11434" },
@@ -36,6 +66,7 @@ test("serve status items match the menubar dropdown content", () => {
         kind: "info",
         title: "Emulated tools: web_search: unavailable (no executable search command found), tool_search: ready",
       },
+      { kind: "info", title: "App tools: codex_apps: 196 ready" },
       { kind: "info", title: "Debug log: /tmp/hydra.log" },
       { kind: "info", title: "Codex config: /tmp/config.toml" },
     ],
