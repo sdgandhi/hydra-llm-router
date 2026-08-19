@@ -149,9 +149,55 @@ export function normalizeResponsesInput(input, { allowImages = false } = {}) {
   });
 }
 
+export function normalizeLMStudioInput(input, { allowImages = false } = {}) {
+  if (typeof input === "string") return [{ role: "user", content: input }];
+  if (!Array.isArray(input)) return [{ role: "user", content: JSON.stringify(input ?? "") }];
+
+  return input.map((item) => {
+    if (item?.type === "function_call") {
+      return {
+        role: "assistant",
+        content: "",
+        tool_calls: [
+          {
+            id: item.call_id,
+            type: "function",
+            function: { name: item.name, arguments: item.arguments ?? "{}" },
+          },
+        ],
+      };
+    }
+    if (item?.type === "function_call_output") {
+      return {
+        role: "tool",
+        tool_call_id: item.call_id,
+        content: typeof item.output === "string" ? item.output : JSON.stringify(item.output ?? ""),
+      };
+    }
+    const role = item.role ?? "user";
+    if (!Array.isArray(item.content)) return { role, content: String(item.content ?? "") };
+    const content = item.content.map((part) => {
+      if (!isImagePart(part)) {
+        return { type: "text", text: part.text ?? part.input_text ?? part.output_text ?? "" };
+      }
+      if (!allowImages) throw new Error("LM Studio model does not advertise vision support for image inputs.");
+      const source = part.image_url?.url ?? part.image_url ?? part.url ?? part.data;
+      if (typeof source !== "string" || !source) {
+        throw new Error("Unsupported image input for LM Studio: expected an image URL or data URL.");
+      }
+      return { type: "image_url", image_url: { url: source } };
+    });
+    return { role, content };
+  });
+}
+
 function requestedThinking(body) {
   const effort = body?.reasoning?.effort ?? body?.reasoning_effort ?? body?.reasoning_level;
   return typeof effort === "string" && effort.toLowerCase() !== "none";
+}
+
+function requestedNoTools(body) {
+  return body?.tool_choice === "none" || body?.tool_choice?.type === "none";
 }
 
 export function buildOllamaChatBody({ body, route, stream, messages = null, appTools = [] }) {
@@ -171,6 +217,31 @@ export function buildOllamaChatBody({ body, route, stream, messages = null, appT
   if (tools.length && capabilities.tools !== false) ollamaBody.tools = tools;
   if (capabilities.thinking && requestedThinking(body)) ollamaBody.think = true;
   return ollamaBody;
+}
+
+export function buildLMStudioChatBody({ body, route, stream }) {
+  const capabilities = route.capabilities ?? {};
+  const tools = normalizeOllamaTools(body.tools);
+  const messages = normalizeLMStudioInput(body.input, { allowImages: Boolean(capabilities.vision) });
+  if (body.instructions) messages.unshift({ role: "system", content: String(body.instructions) });
+  const lmStudioBody = {
+    model: route.upstreamModel,
+    messages,
+    stream,
+    temperature: body.temperature,
+    top_p: body.top_p,
+    max_tokens: body.max_output_tokens,
+  };
+  if (tools.length && capabilities.tools !== false && !requestedNoTools(body)) {
+    lmStudioBody.tools = tools;
+    if (body.tool_choice != null) {
+      lmStudioBody.tool_choice =
+        body.tool_choice?.type === "function" && body.tool_choice.name
+          ? { type: "function", function: { name: body.tool_choice.name } }
+          : body.tool_choice;
+    }
+  }
+  return lmStudioBody;
 }
 
 function mergeOllamaTools(...toolLists) {
@@ -542,10 +613,12 @@ async function callOllama({ req, body, route, ollamaBaseUrl, res, debugAuth, app
   const id = responseId();
   const url = new URL("/api/chat", ollamaBaseUrl);
   let appTools = [];
-  try {
-    appTools = appServerBridge ? await appServerBridge.getTools() : [];
-  } catch (error) {
-    debugLogError({ enabled: debugAuth, req, error, stage: "app_tools_discovery" });
+  if (!requestedNoTools(body)) {
+    try {
+      appTools = appServerBridge ? await appServerBridge.getTools() : [];
+    } catch (error) {
+      debugLogError({ enabled: debugAuth, req, error, stage: "app_tools_discovery" });
+    }
   }
   const appToolNames = new Set(appTools.map((tool) => tool.function?.name).filter(Boolean));
   const searchableTools = toolSourcesForSearch({ requestTools: body.tools, appTools });
@@ -912,6 +985,200 @@ async function callOllama({ req, body, route, ollamaBaseUrl, res, debugAuth, app
   });
 }
 
+function lmStudioMessageText(content) {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content.map((part) => part?.text ?? "").join("");
+}
+
+function mergeLMStudioToolCallDeltas(target, deltas) {
+  for (const delta of Array.isArray(deltas) ? deltas : []) {
+    const index = Number.isInteger(delta.index) ? delta.index : target.length;
+    const current = target[index] ?? { function: { name: "", arguments: "" } };
+    if (delta.id) current.id = delta.id;
+    if (delta.function?.name) current.function.name += delta.function.name;
+    if (delta.function?.arguments) current.function.arguments += delta.function.arguments;
+    target[index] = current;
+  }
+}
+
+async function callLMStudio({ req, body, route, lmStudioBaseUrl, res, debugAuth }) {
+  const stream = body.stream !== false;
+  const id = responseId();
+  const url = new URL("/v1/chat/completions", lmStudioBaseUrl);
+  let upstreamBody;
+  try {
+    upstreamBody = buildLMStudioChatBody({ body, route, stream });
+  } catch (error) {
+    if (error.message.startsWith("Unsupported image input") || error.message.includes("vision support")) {
+      jsonResponse(req, res, 400, { error: { message: error.message } }, debugAuth, {
+        route,
+      });
+      return;
+    }
+    throw error;
+  }
+
+  debugLogUpstream({
+    enabled: debugAuth,
+    req,
+    route,
+    upstream: {
+      provider: "lmstudio",
+      url: url.toString(),
+      requestBytes: Buffer.byteLength(JSON.stringify(upstreamBody)),
+      stream,
+      toolCount: upstreamBody.tools?.length ?? 0,
+    },
+    stage: "request",
+  });
+
+  const response = await fetch(url, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(upstreamBody),
+  });
+  debugLogUpstream({
+    enabled: debugAuth,
+    req,
+    route,
+    upstream: {
+      provider: "lmstudio",
+      url: url.toString(),
+      status: response.status,
+      contentType: response.headers.get("content-type"),
+    },
+    stage: "response",
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    jsonResponse(req, res, response.status, { error: { message: text || response.statusText } }, debugAuth, {
+      route,
+      upstream: { provider: "lmstudio", status: response.status },
+    });
+    return;
+  }
+
+  if (!stream) {
+    const data = await response.json();
+    const message = data.choices?.[0]?.message ?? {};
+    const thinking = message.reasoning_content ?? message.reasoning ?? "";
+    const content = lmStudioMessageText(message.content);
+    const toolCalls = normalizeOllamaToolCalls(message.tool_calls);
+    const output = [];
+    if (thinking) output.push(reasoningItem({ id, status: "completed", text: thinking }));
+    if (content || !toolCalls.length) output.push(messageItem({ id, status: "completed", text: content }));
+    toolCalls.forEach((toolCall, index) => output.push(functionCallItem({ id, index, ...toolCall })));
+    const usage = data.usage ?? {};
+    jsonResponse(
+      req,
+      res,
+      200,
+      {
+        ...responseEnvelope({ id, model: body.model, status: "completed", output }),
+        usage: {
+          input_tokens: usage.prompt_tokens ?? 0,
+          output_tokens: usage.completion_tokens ?? 0,
+          total_tokens: usage.total_tokens ?? 0,
+        },
+      },
+      debugAuth,
+      { route, upstream: { provider: "lmstudio", status: response.status } },
+    );
+    return;
+  }
+
+  sseHeaders(res);
+  writeResponseStreamStart(res, { id, model: body.model });
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let content = "";
+  let thinking = "";
+  let emittedContent = false;
+  let emittedThinking = false;
+  let completedThinking = false;
+  const toolCallDeltas = [];
+
+  const handleLine = (line) => {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith("data:")) return;
+    const payload = trimmed.slice(5).trim();
+    if (!payload || payload === "[DONE]") return;
+    const event = JSON.parse(payload);
+    const delta = event.choices?.[0]?.delta ?? {};
+    const reasoningDelta = delta.reasoning_content ?? delta.reasoning ?? "";
+    const contentDelta = lmStudioMessageText(delta.content);
+    if (reasoningDelta) {
+      if (!emittedThinking) writeReasoningStart(res, { id, outputIndex: 0 });
+      writeReasoningDelta(res, { id, outputIndex: 0, delta: reasoningDelta });
+      thinking += reasoningDelta;
+      emittedThinking = true;
+    }
+    if (contentDelta) {
+      if (emittedThinking && !completedThinking) {
+        writeReasoningDone(res, { id, outputIndex: 0, text: thinking });
+        completedThinking = true;
+      }
+      if (!emittedContent) writeMessageStart(res, { id, outputIndex: emittedThinking ? 1 : 0 });
+      writeSse(res, "response.output_text.delta", {
+        type: "response.output_text.delta",
+        item_id: `${id}_msg`,
+        output_index: emittedThinking ? 1 : 0,
+        content_index: 0,
+        delta: contentDelta,
+      });
+      content += contentDelta;
+      emittedContent = true;
+    }
+    mergeLMStudioToolCallDeltas(toolCallDeltas, delta.tool_calls);
+  };
+
+  for await (const chunk of response.body) {
+    buffer += decoder.decode(chunk, { stream: true });
+    const lines = buffer.split(/\r?\n/);
+    buffer = lines.pop() ?? "";
+    for (const line of lines) handleLine(line);
+  }
+  if (buffer.trim()) handleLine(buffer);
+
+  if (emittedThinking && !completedThinking) {
+    writeReasoningDone(res, { id, outputIndex: 0, text: thinking });
+  }
+  const toolCalls = normalizeOllamaToolCalls(toolCallDeltas);
+  const output = [];
+  if (emittedThinking) output.push(reasoningItem({ id, status: "completed", text: thinking }));
+  if (emittedContent || !toolCalls.length) {
+    const outputIndex = emittedThinking ? 1 : 0;
+    if (!emittedContent) writeMessageStart(res, { id, outputIndex });
+    writeMessageDone(res, { id, outputIndex, text: content });
+    output.push(messageItem({ id, status: "completed", text: content }));
+  }
+  let outputIndex = output.length;
+  toolCalls.forEach((toolCall, index) => {
+    writeFunctionCall(res, { id, outputIndex, callIndex: index, ...toolCall });
+    output.push(functionCallItem({ id, index, ...toolCall }));
+    outputIndex += 1;
+  });
+  writeResponseStreamDone(res, { id, model: body.model, output });
+  res.write("data: [DONE]\n\n");
+  res.end();
+  debugLogAccess({
+    enabled: debugAuth,
+    req,
+    status: 200,
+    route,
+    upstream: {
+      provider: "lmstudio",
+      status: response.status,
+      stream: true,
+      contentChars: content.length,
+      thinkingChars: thinking.length,
+      toolCalls: toolCalls.length,
+    },
+  });
+}
+
 async function forwardOpenAI({ req, body, openaiBaseUrl, apiKey, res, route, debugAuth }) {
   const url = upstreamResponsesUrl(req.url, openaiBaseUrl);
   const headers = forwardedHeaders(req.headers);
@@ -1034,7 +1301,15 @@ function rejectUpgrade({ req, socket, debugAuth }) {
   writeUpgradeRejection(socket, 426, "Upgrade Required");
 }
 
-export function createHydraHandler({ paths, ollamaBaseUrl, openaiBaseUrl, apiKey, debugAuth = false, appServerBridge = null }) {
+export function createHydraHandler({
+  paths,
+  ollamaBaseUrl,
+  lmStudioBaseUrl,
+  openaiBaseUrl,
+  apiKey,
+  debugAuth = false,
+  appServerBridge = null,
+}) {
   async function hydraHandler(req, res) {
     try {
       if (req.method === "GET" && req.url === "/healthz") {
@@ -1085,6 +1360,11 @@ export function createHydraHandler({ paths, ollamaBaseUrl, openaiBaseUrl, apiKey
 
       if (route.provider === "ollama") {
         await callOllama({ req, body, route, ollamaBaseUrl, res, debugAuth, appServerBridge });
+        return;
+      }
+
+      if (route.provider === "lmstudio") {
+        await callLMStudio({ req, body, route, lmStudioBaseUrl, res, debugAuth });
         return;
       }
 

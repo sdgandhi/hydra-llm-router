@@ -62,6 +62,7 @@ export function menuBarStatusItems(config) {
     { kind: "info", title: `Router: http://127.0.0.1:${config.port}` },
     { kind: "info", title: `Cloud: ${config.openaiBaseUrl}` },
     { kind: "info", title: `Ollama: ${config.ollamaBaseUrl}` },
+    { kind: "info", title: `LM Studio: ${config.lmStudioBaseUrl}` },
     { kind: "info", title: `Emulated tools: ${emulatedToolsLabel(config.emulatedToolStatuses ?? [])}` },
     { kind: "info", title: `App tools: ${appToolsLabel(config.appToolStatus)}` },
   ];

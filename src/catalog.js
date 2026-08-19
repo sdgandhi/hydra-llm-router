@@ -3,13 +3,25 @@ const THINKING_REASONING_LEVEL = {
   effort: "medium",
   description: "Use Ollama thinking mode when supported by the local model.",
 };
+const LMSTUDIO_THINKING_REASONING_LEVEL = {
+  effort: "medium",
+  description: "Use LM Studio reasoning when supported by the local model.",
+};
 
 export function normalizeOllamaSlug(name) {
   return `ollama/${name}`;
 }
 
+export function normalizeLMStudioSlug(name) {
+  return `lmstudio/${name}`;
+}
+
 function localDisplayName(name) {
   return `Ollama: ${name}`;
+}
+
+function lmStudioDisplayName(name) {
+  return `LM Studio: ${name}`;
 }
 
 function cloneWithoutNux(model) {
@@ -38,6 +50,22 @@ function ollamaContextWindow(ollamaModel, modelInfo) {
     if (Number.isFinite(context) && context > 0) return context;
   }
 
+  return DEFAULT_LOCAL_CONTEXT_WINDOW;
+}
+
+function lmStudioContextWindow(model) {
+  const configured = Number(process.env.HYDRA_LMSTUDIO_CONTEXT_WINDOW);
+  if (Number.isFinite(configured) && configured > 0) return configured;
+
+  for (const value of [
+    model.loaded_instances?.[0]?.config?.context_length,
+    model.max_context_length,
+    model.context_length,
+    model.max_tokens,
+  ]) {
+    const context = Number(value);
+    if (Number.isFinite(context) && context > 0) return context;
+  }
   return DEFAULT_LOCAL_CONTEXT_WINDOW;
 }
 
@@ -86,6 +114,32 @@ export function localModelFromTemplate(template, ollamaModel, priority, { modelI
   return model;
 }
 
+export function lmStudioModelFromTemplate(template, lmStudioModel, priority) {
+  const name = lmStudioModel.id;
+  const capabilities = lmStudioRouteCapabilities(lmStudioModel);
+  const model = cloneWithoutNux(template);
+  model.slug = normalizeLMStudioSlug(name);
+  model.display_name = lmStudioDisplayName(name);
+  model.description = `Local LM Studio model (${lmStudioModel.params_string ?? "unknown size"}).`;
+  model.visibility = "list";
+  model.supported_in_api = true;
+  model.priority = priority;
+  model.context_window = lmStudioContextWindow(lmStudioModel);
+  model.max_context_window = model.context_window;
+  model.default_reasoning_level = capabilities.thinking ? LMSTUDIO_THINKING_REASONING_LEVEL.effort : "none";
+  model.supported_reasoning_levels = capabilities.thinking ? [LMSTUDIO_THINKING_REASONING_LEVEL] : [];
+  model.supports_reasoning_summaries = true;
+  model.support_verbosity = false;
+  model.default_verbosity = "low";
+  model.supports_search_tool = false;
+  model.input_modalities = capabilities.vision ? ["text", "image"] : ["text"];
+  model.web_search_tool_type = "text";
+  model.use_responses_lite = false;
+  model.shell_type = "shell_command";
+  model.supports_parallel_tool_calls = capabilities.tools;
+  return model;
+}
+
 export async function fetchOllamaModels({ ollamaBaseUrl, fetchImpl }) {
   const response = await fetchImpl(new URL("/api/tags", ollamaBaseUrl));
   if (!response.ok) {
@@ -107,6 +161,35 @@ export async function fetchOllamaModelInfo({ ollamaBaseUrl, model, fetchImpl }) 
   return response.json();
 }
 
+export async function fetchLMStudioModels({ lmStudioBaseUrl, fetchImpl }) {
+  const nativeResponse = await fetchImpl(new URL("/api/v1/models", lmStudioBaseUrl));
+  if (nativeResponse.ok) {
+    const body = await nativeResponse.json();
+    return Array.isArray(body.models)
+      ? body.models
+          .filter((model) => model?.type === "llm" && typeof model.key === "string" && model.key)
+          .map((model) => ({ ...model, id: model.key }))
+      : [];
+  }
+
+  const compatibleResponse = await fetchImpl(new URL("/v1/models", lmStudioBaseUrl));
+  if (!compatibleResponse.ok) {
+    throw new Error(`LM Studio model query failed: HTTP ${compatibleResponse.status}`);
+  }
+  const body = await compatibleResponse.json();
+  return Array.isArray(body.data) ? body.data.filter((model) => typeof model?.id === "string" && model.id) : [];
+}
+
+function lmStudioRouteCapabilities(model) {
+  const advertised = model.capabilities;
+  return {
+    thinking: Boolean(advertised?.reasoning),
+    tools: advertised ? Boolean(advertised.trained_for_tool_use) : true,
+    vision: Boolean(advertised?.vision),
+    webSearch: false,
+  };
+}
+
 async function fetchOllamaModelInfoMap({ ollamaBaseUrl, ollamaModels, fetchImpl }) {
   const entries = await Promise.all(
     ollamaModels.map(async (model) => {
@@ -121,7 +204,13 @@ async function fetchOllamaModelInfoMap({ ollamaBaseUrl, ollamaModels, fetchImpl 
   return new Map(entries);
 }
 
-export async function buildCatalog({ sourceCatalog, ollamaBaseUrl, fetchImpl, webSearchReady = false }) {
+export async function buildCatalog({
+  sourceCatalog,
+  ollamaBaseUrl,
+  lmStudioBaseUrl,
+  fetchImpl,
+  webSearchReady = false,
+}) {
   if (!sourceCatalog?.models?.length) {
     throw new Error("Codex source catalog must contain at least one model");
   }
@@ -131,16 +220,25 @@ export async function buildCatalog({ sourceCatalog, ollamaBaseUrl, fetchImpl, we
   let ollamaModels = [];
   try {
     ollamaModels = await fetchOllamaModels({ ollamaBaseUrl, fetchImpl });
-  } catch (error) {
+  } catch {
     ollamaModels = [];
+  }
+  let lmStudioModels = [];
+  try {
+    lmStudioModels = await fetchLMStudioModels({ lmStudioBaseUrl, fetchImpl });
+  } catch {
+    lmStudioModels = [];
   }
   const ollamaModelInfo = await fetchOllamaModelInfoMap({ ollamaBaseUrl, ollamaModels, fetchImpl });
 
-  const localModels = ollamaModels.map((model, index) =>
+  const ollamaCatalogModels = ollamaModels.map((model, index) =>
     localModelFromTemplate(template, model, 1000 + index, {
       modelInfo: ollamaModelInfo.get(model.name || model.model),
       webSearchReady,
     }),
+  );
+  const lmStudioCatalogModels = lmStudioModels.map((model, index) =>
+    lmStudioModelFromTemplate(template, model, 2000 + index),
   );
   const routes = {};
   for (const model of cloudModels) routes[model.slug] = { provider: "openai", upstreamModel: model.slug };
@@ -153,13 +251,20 @@ export async function buildCatalog({ sourceCatalog, ollamaBaseUrl, fetchImpl, we
       capabilities: routeCapabilities(modelInfo, webSearchReady),
     };
   }
+  for (const model of lmStudioModels) {
+    routes[normalizeLMStudioSlug(model.id)] = {
+      provider: "lmstudio",
+      upstreamModel: model.id,
+      capabilities: lmStudioRouteCapabilities(model),
+    };
+  }
 
   return {
     catalog: {
       fetched_at: new Date().toISOString(),
       etag: `hydra-${Date.now()}`,
       client_version: sourceCatalog.client_version ?? "hydra",
-      models: [...cloudModels, ...localModels],
+      models: [...cloudModels, ...ollamaCatalogModels, ...lmStudioCatalogModels],
     },
     routes,
   };

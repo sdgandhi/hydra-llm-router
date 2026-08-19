@@ -18,6 +18,7 @@ test("parses app tool bridge flags", () => {
   const config = buildConfig({ app_tool_servers: "codex_apps,node_repl", codex_bin: "/tmp/codex" });
   assert.equal(config.codexBin, "/tmp/codex");
   assert.deepEqual(config.appToolServers, ["codex_apps", "node_repl"]);
+  assert.equal(config.lmStudioBaseUrl, "http://127.0.0.1:11239");
 });
 
 test("serve status items match the menubar dropdown content", () => {
@@ -26,6 +27,7 @@ test("serve status items match the menubar dropdown content", () => {
       port: 3847,
       openaiBaseUrl: "https://chatgpt.com/backend-api/codex",
       ollamaBaseUrl: "http://127.0.0.1:11434",
+      lmStudioBaseUrl: "http://127.0.0.1:11239",
       debugAuth: true,
       catalog: {
         models: [
@@ -62,6 +64,7 @@ test("serve status items match the menubar dropdown content", () => {
       { kind: "info", title: "Router: http://127.0.0.1:3847" },
       { kind: "info", title: "Cloud: https://chatgpt.com/backend-api/codex" },
       { kind: "info", title: "Ollama: http://127.0.0.1:11434" },
+      { kind: "info", title: "LM Studio: http://127.0.0.1:11239" },
       {
         kind: "info",
         title: "Emulated tools: web_search: unavailable (no executable search command found), tool_search: ready",

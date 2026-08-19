@@ -9,6 +9,7 @@ import { tmpdir } from "node:os";
 import { zstdCompressSync } from "node:zlib";
 import {
   buildOllamaChatBody,
+  buildLMStudioChatBody,
   createHydraHandler,
   decodeBody,
   emulatedToolStatuses,
@@ -271,6 +272,132 @@ test("omits Ollama tools when route capabilities do not support tools", () => {
   });
 
   assert.equal("tools" in body, false);
+});
+
+test("converts Responses requests to LM Studio chat completions", () => {
+  assert.deepEqual(
+    buildLMStudioChatBody({
+      body: {
+        model: "lmstudio/qwen3-4b",
+        input: "hello",
+        instructions: "Be concise.",
+        max_output_tokens: 100,
+        tools: [{ type: "function", name: "get_weather", parameters: { type: "object" } }],
+      },
+      route: { upstreamModel: "qwen3-4b", capabilities: { tools: true } },
+      stream: true,
+    }),
+    {
+      model: "qwen3-4b",
+      messages: [
+        { role: "system", content: "Be concise." },
+        { role: "user", content: "hello" },
+      ],
+      stream: true,
+      temperature: undefined,
+      top_p: undefined,
+      max_tokens: 100,
+      tools: [
+        {
+          type: "function",
+          function: {
+            name: "get_weather",
+            description: "",
+            parameters: { type: "object" },
+          },
+        },
+      ],
+    },
+  );
+});
+
+test("converts Responses function-call history for LM Studio follow-up turns", () => {
+  const request = buildLMStudioChatBody({
+    body: {
+      input: [
+        { type: "function_call", call_id: "call_1", name: "get_weather", arguments: '{"city":"Boston"}' },
+        { type: "function_call_output", call_id: "call_1", output: "Sunny" },
+      ],
+    },
+    route: { upstreamModel: "qwen3-4b", capabilities: { tools: true } },
+    stream: false,
+  });
+
+  assert.deepEqual(request.messages, [
+    {
+      role: "assistant",
+      content: "",
+      tool_calls: [
+        {
+          id: "call_1",
+          type: "function",
+          function: { name: "get_weather", arguments: '{"city":"Boston"}' },
+        },
+      ],
+    },
+    { role: "tool", tool_call_id: "call_1", content: "Sunny" },
+  ]);
+});
+
+test("routes streaming LM Studio chat completions as Responses events", async () => {
+  const tempDir = await mkdtemp(join(tmpdir(), "hydra-router-test-"));
+  const routesPath = join(tempDir, "routes.json");
+  await writeFile(
+    routesPath,
+    JSON.stringify({
+      "lmstudio/qwen3-4b": {
+        provider: "lmstudio",
+        upstreamModel: "qwen3-4b",
+        capabilities: { tools: true, vision: false },
+      },
+    }),
+  );
+  const originalFetch = globalThis.fetch;
+  let upstreamRequest;
+  let hydra;
+  globalThis.fetch = async (url, options) => {
+    assert.equal(String(url), "http://127.0.0.1:11239/v1/chat/completions");
+    upstreamRequest = JSON.parse(options.body);
+    return new Response(
+      'data: {"choices":[{"delta":{"content":"hello "}}]}\n\n' +
+        'data: {"choices":[{"delta":{"content":"locally"},"finish_reason":"stop"}]}\n\n' +
+        "data: [DONE]\n\n",
+      { status: 200, headers: { "content-type": "text/event-stream" } },
+    );
+  };
+
+  try {
+    const handler = createHydraHandler({
+      paths: { routesPath },
+      ollamaBaseUrl: "http://127.0.0.1:11434",
+      lmStudioBaseUrl: "http://127.0.0.1:11239",
+      openaiBaseUrl: "https://chatgpt.com/backend-api/codex",
+    });
+    hydra = createHttpServer(handler);
+    hydra.listen(0, "127.0.0.1");
+    await once(hydra, "listening");
+
+    const response = await originalFetch(`http://127.0.0.1:${hydra.address().port}/responses`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "lmstudio/qwen3-4b", input: "hello", stream: true }),
+    });
+    const text = await response.text();
+
+    assert.equal(response.status, 200);
+    assert.equal(upstreamRequest.model, "qwen3-4b");
+    assert.equal(upstreamRequest.stream, true);
+    assert.match(text, /hello /);
+    assert.match(text, /locally/);
+    assert.match(text, /response\.completed/);
+  } finally {
+    if (hydra?.listening) {
+      hydra.close();
+      await Promise.allSettled([once(hydra, "close")]);
+    }
+    globalThis.fetch = originalFetch;
+    await rm(tempDir, { recursive: true, force: true });
+  }
 });
 
 test("routes local app tool calls through the App Server bridge", async () => {

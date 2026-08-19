@@ -23,12 +23,26 @@ find_node() {
 }
 
 find_codex() {
+  if [[ -n "${HYDRA_CODEX_BIN:-}" ]]; then
+    if [[ -x "$HYDRA_CODEX_BIN" ]]; then
+      print -r -- "$HYDRA_CODEX_BIN"
+      return 0
+    fi
+    return 1
+  fi
+
   if command -v codex >/dev/null 2>&1; then
     command -v codex
     return 0
   fi
 
-  for candidate in /Applications/Codex.app/Contents/Resources/codex /opt/homebrew/bin/codex /usr/local/bin/codex; do
+  for candidate in \
+    /Applications/ChatGPT.app/Contents/Resources/codex \
+    /Applications/Codex.app/Contents/Resources/codex \
+    "$HOME/Applications/ChatGPT.app/Contents/Resources/codex" \
+    "$HOME/Applications/Codex.app/Contents/Resources/codex" \
+    /opt/homebrew/bin/codex \
+    /usr/local/bin/codex; do
     if [[ -x "$candidate" ]]; then
       print -r -- "$candidate"
       return 0

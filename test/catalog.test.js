@@ -1,9 +1,18 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { buildCatalog, catalogModelTitles, normalizeOllamaSlug } from "../src/catalog.js";
+import {
+  buildCatalog,
+  catalogModelTitles,
+  normalizeLMStudioSlug,
+  normalizeOllamaSlug,
+} from "../src/catalog.js";
 
 test("normalizes Ollama model names under a collision-free namespace", () => {
   assert.equal(normalizeOllamaSlug("llama3.2:latest"), "ollama/llama3.2:latest");
+});
+
+test("normalizes LM Studio model names under a collision-free namespace", () => {
+  assert.equal(normalizeLMStudioSlug("qwen3-4b"), "lmstudio/qwen3-4b");
 });
 
 test("extracts catalog model slugs in display order", () => {
@@ -204,4 +213,65 @@ test("keeps cloud catalog usable if Ollama is unavailable", async () => {
     result.catalog.models.map((model) => model.slug),
     ["gpt-test"],
   );
+});
+
+test("adds models advertised by LM Studio", async () => {
+  const sourceCatalog = {
+    models: [{ slug: "gpt-test", display_name: "GPT Test", visibility: "list", context_window: 1000 }],
+  };
+  const fetchImpl = async (url) => {
+    if (url.port === "11434") throw new Error("Ollama offline");
+    assert.equal(url.toString(), "http://127.0.0.1:11239/api/v1/models");
+    return {
+      ok: true,
+      json: async () => ({
+        models: [
+          {
+            type: "llm",
+            key: "qwen3-4b",
+            max_context_length: 65536,
+            params_string: "4B",
+            capabilities: { vision: true, trained_for_tool_use: true, reasoning: { default: "on" } },
+          },
+          { type: "embedding", key: "embed-model", max_context_length: 2048 },
+        ],
+      }),
+    };
+  };
+
+  const result = await buildCatalog({
+    sourceCatalog,
+    ollamaBaseUrl: "http://127.0.0.1:11434",
+    lmStudioBaseUrl: "http://127.0.0.1:11239",
+    fetchImpl,
+  });
+
+  assert.deepEqual(
+    result.catalog.models.map((model) => model.slug),
+    ["gpt-test", "lmstudio/qwen3-4b"],
+  );
+  assert.equal(result.catalog.models[1].display_name, "LM Studio: qwen3-4b");
+  assert.equal(result.catalog.models[1].context_window, 65536);
+  assert.deepEqual(result.catalog.models[1].input_modalities, ["text", "image"]);
+  assert.equal(result.catalog.models[1].default_reasoning_level, "medium");
+  assert.deepEqual(result.routes["lmstudio/qwen3-4b"], {
+    provider: "lmstudio",
+    upstreamModel: "qwen3-4b",
+    capabilities: { thinking: true, tools: true, vision: true, webSearch: false },
+  });
+});
+
+test("omits local providers that advertise no models", async () => {
+  const result = await buildCatalog({
+    sourceCatalog: { models: [{ slug: "gpt-test", display_name: "GPT Test", visibility: "list" }] },
+    ollamaBaseUrl: "http://127.0.0.1:11434",
+    lmStudioBaseUrl: "http://127.0.0.1:11239",
+    fetchImpl: async (url) => ({
+      ok: true,
+      json: async () => (url.pathname === "/api/tags" ? { models: [] } : { data: [] }),
+    }),
+  });
+
+  assert.deepEqual(result.catalog.models.map((model) => model.slug), ["gpt-test"]);
+  assert.deepEqual(Object.keys(result.routes), ["gpt-test"]);
 });

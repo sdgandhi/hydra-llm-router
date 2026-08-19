@@ -37,6 +37,7 @@ Options:
   --port <n>               Router port (default: 3847)
   --codex-home <path>      Codex home (default: ~/.codex)
   --ollama-url <url>       Ollama base URL (default: http://127.0.0.1:11434)
+  --lmstudio-url <url>     LM Studio base URL (default: http://127.0.0.1:11239)
   --openai-base-url <url>  Cloud upstream URL (default: https://chatgpt.com/backend-api/codex)
   --app-tools <auto|off>   Expose Codex app-server tools to local models (default: auto)
   --app-tool-servers <csv> App-server MCP servers to expose (default: codex_apps)
@@ -79,6 +80,8 @@ export function buildConfig(options = {}) {
     paths,
     port: Number(options.port ?? process.env.HYDRA_PORT ?? 3847),
     ollamaBaseUrl: options.ollama_url ?? process.env.OLLAMA_BASE_URL ?? "http://127.0.0.1:11434",
+    lmStudioBaseUrl:
+      options.lmstudio_url ?? process.env.LMSTUDIO_BASE_URL ?? "http://127.0.0.1:11239",
     openaiBaseUrl:
       options.openai_base_url ??
       process.env.HYDRA_OPENAI_BASE_URL ??
@@ -170,6 +173,7 @@ export async function main() {
   const handler = createHydraHandler({
     paths: config.paths,
     ollamaBaseUrl: config.ollamaBaseUrl,
+    lmStudioBaseUrl: config.lmStudioBaseUrl,
     openaiBaseUrl: config.openaiBaseUrl,
     apiKey: process.env.OPENAI_API_KEY,
     debugAuth: config.debugAuth,

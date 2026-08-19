@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
+import { homedir } from "node:os";
 import { delimiter, isAbsolute, join } from "node:path";
 
 const DEFAULT_CLIENT_INFO = {
@@ -11,7 +12,10 @@ const DEFAULT_APP_TOOL_SERVERS = ["codex_apps"];
 const DEFAULT_REQUEST_TIMEOUT_MS = 30000;
 const DEFAULT_TOOL_CACHE_MS = 60000;
 const CODEX_BIN_CANDIDATES = [
+  "/Applications/ChatGPT.app/Contents/Resources/codex",
   "/Applications/Codex.app/Contents/Resources/codex",
+  join(homedir(), "Applications/ChatGPT.app/Contents/Resources/codex"),
+  join(homedir(), "Applications/Codex.app/Contents/Resources/codex"),
   "/opt/homebrew/bin/codex",
   "/usr/local/bin/codex",
 ];
@@ -24,19 +28,22 @@ export function parseAppToolServers(value) {
     .filter(Boolean);
 }
 
-export function resolveCodexBin(codexBin = "codex", { env = process.env } = {}) {
+export function resolveCodexBin(
+  codexBin = "codex",
+  { env = process.env, existsImpl = existsSync, candidates = CODEX_BIN_CANDIDATES } = {},
+) {
   if (codexBin.includes("/") || isAbsolute(codexBin)) return codexBin;
 
   for (const dir of String(env.PATH ?? "")
     .split(delimiter)
     .filter(Boolean)) {
     const candidate = join(dir, codexBin);
-    if (existsSync(candidate)) return candidate;
+    if (existsImpl(candidate)) return candidate;
   }
 
   if (codexBin === "codex") {
-    for (const candidate of CODEX_BIN_CANDIDATES) {
-      if (existsSync(candidate)) return candidate;
+    for (const candidate of candidates) {
+      if (existsImpl(candidate)) return candidate;
     }
   }
 

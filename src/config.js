@@ -53,6 +53,7 @@ export async function refreshCatalog(config) {
   const catalog = await buildCatalog({
     sourceCatalog,
     ollamaBaseUrl: config.ollamaBaseUrl,
+    lmStudioBaseUrl: config.lmStudioBaseUrl,
     fetchImpl: globalThis.fetch,
     webSearchReady: toolStatuses.some((tool) => tool.name === "web_search" && tool.status === "ready"),
   });
@@ -61,6 +62,7 @@ export async function refreshCatalog(config) {
   await writeJsonAtomic(config.paths.settingsPath, {
     port: config.port,
     ollamaBaseUrl: config.ollamaBaseUrl,
+    lmStudioBaseUrl: config.lmStudioBaseUrl,
     openaiBaseUrl: config.openaiBaseUrl,
     appTools: config.appTools,
     appToolServers: config.appToolServers,

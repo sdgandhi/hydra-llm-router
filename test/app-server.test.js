@@ -17,6 +17,29 @@ test("keeps explicit Codex binary paths", () => {
   assert.equal(resolveCodexBin("/tmp/codex", { env: { PATH: "" } }), "/tmp/codex");
 });
 
+test("finds the Codex helper bundled with ChatGPT Desktop", () => {
+  const chatGptCodex = "/Applications/ChatGPT.app/Contents/Resources/codex";
+  assert.equal(
+    resolveCodexBin("codex", {
+      env: { PATH: "" },
+      candidates: [chatGptCodex, "/Applications/Codex.app/Contents/Resources/codex"],
+      existsImpl: (candidate) => candidate === chatGptCodex,
+    }),
+    chatGptCodex,
+  );
+});
+
+test("prefers a Codex helper found on PATH", () => {
+  assert.equal(
+    resolveCodexBin("codex", {
+      env: { PATH: "/custom/bin" },
+      candidates: ["/Applications/ChatGPT.app/Contents/Resources/codex"],
+      existsImpl: (candidate) => candidate === "/custom/bin/codex",
+    }),
+    "/custom/bin/codex",
+  );
+});
+
 test("converts MCP tools to Ollama functions", () => {
   const tool = mcpToolToOllamaTool({
     server: "codex_apps",
