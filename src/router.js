@@ -6,7 +6,14 @@ import { delimiter, isAbsolute, join } from "node:path";
 import { promisify } from "node:util";
 import { brotliDecompressSync, gunzipSync, inflateSync, zstdDecompressSync } from "node:zlib";
 import { appToolSourceFromOllamaTool } from "./app-server.js";
-import { debugLogAccess, debugLogError, debugLogRequest, debugLogUpgrade, debugLogUpstream } from "./debug.js";
+import {
+  debugLogAccess,
+  debugLogCancellation,
+  debugLogError,
+  debugLogRequest,
+  debugLogUpgrade,
+  debugLogUpstream,
+} from "./debug.js";
 
 const execFileAsync = promisify(execFile);
 const EMULATED_TOOL_NAMES = new Set(["web_search", "tool_search"]);
@@ -191,9 +198,14 @@ export function normalizeLMStudioInput(input, { allowImages = false } = {}) {
   });
 }
 
-function requestedThinking(body) {
+export function normalizedReasoningEffort(body) {
   const effort = body?.reasoning?.effort ?? body?.reasoning_effort ?? body?.reasoning_level;
-  return typeof effort === "string" && effort.toLowerCase() !== "none";
+  return typeof effort === "string" ? effort.trim().toLowerCase() : undefined;
+}
+
+function requestedThinking(body) {
+  const effort = normalizedReasoningEffort(body);
+  return effort !== undefined && effort !== "none";
 }
 
 function requestedNoTools(body) {
@@ -232,6 +244,14 @@ export function buildLMStudioChatBody({ body, route, stream }) {
     top_p: body.top_p,
     max_tokens: body.max_output_tokens,
   };
+  const reasoningEffort = normalizedReasoningEffort(body);
+  if (reasoningEffort === "none") {
+    lmStudioBody.chat_template_kwargs = { enable_thinking: false };
+    lmStudioBody.reasoning_effort = reasoningEffort;
+  } else if (reasoningEffort !== undefined && capabilities.thinking) {
+    lmStudioBody.chat_template_kwargs = { enable_thinking: true };
+    lmStudioBody.reasoning_effort = reasoningEffort;
+  }
   if (tools.length && capabilities.tools !== false && !requestedNoTools(body)) {
     lmStudioBody.tools = tools;
     if (body.tool_choice != null) {
@@ -269,6 +289,26 @@ function sseHeaders(res) {
 function writeSse(res, event, data) {
   res.write(`event: ${event}\n`);
   res.write(`data: ${JSON.stringify(data)}\n\n`);
+}
+
+function waitForDrain(res, signal) {
+  signal.throwIfAborted();
+  return new Promise((resolve, reject) => {
+    const cleanup = () => {
+      res.off("drain", onDrain);
+      signal.removeEventListener("abort", onAbort);
+    };
+    const onDrain = () => {
+      cleanup();
+      resolve();
+    };
+    const onAbort = () => {
+      cleanup();
+      reject(signal.reason);
+    };
+    res.once("drain", onDrain);
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
 }
 
 function responseId() {
@@ -608,7 +648,7 @@ function writeResponseStreamDone(res, { id, model, output }) {
   });
 }
 
-async function callOllama({ req, body, route, ollamaBaseUrl, res, debugAuth, appServerBridge }) {
+async function callOllama({ req, body, route, ollamaBaseUrl, res, debugAuth, appServerBridge, signal }) {
   const stream = body.stream !== false;
   const id = responseId();
   const url = new URL("/api/chat", ollamaBaseUrl);
@@ -684,7 +724,9 @@ async function callOllama({ req, body, route, ollamaBaseUrl, res, debugAuth, app
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(ollamaBody),
+      signal,
     });
+    signal.throwIfAborted();
     debugLogUpstream({
       enabled: debugAuth,
       req,
@@ -810,6 +852,7 @@ async function callOllama({ req, body, route, ollamaBaseUrl, res, debugAuth, app
     buffer = "";
 
     for await (const chunk of response.body) {
+      signal.throwIfAborted();
       buffer += decoder.decode(chunk, { stream: true });
       const lines = buffer.split("\n");
       buffer = lines.pop() ?? "";
@@ -1002,7 +1045,7 @@ function mergeLMStudioToolCallDeltas(target, deltas) {
   }
 }
 
-async function callLMStudio({ req, body, route, lmStudioBaseUrl, res, debugAuth }) {
+async function callLMStudio({ req, body, route, lmStudioBaseUrl, res, debugAuth, signal }) {
   const stream = body.stream !== false;
   const id = responseId();
   const url = new URL("/v1/chat/completions", lmStudioBaseUrl);
@@ -1037,7 +1080,9 @@ async function callLMStudio({ req, body, route, lmStudioBaseUrl, res, debugAuth 
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(upstreamBody),
+    signal,
   });
+  signal.throwIfAborted();
   debugLogUpstream({
     enabled: debugAuth,
     req,
@@ -1063,7 +1108,8 @@ async function callLMStudio({ req, body, route, lmStudioBaseUrl, res, debugAuth 
   if (!stream) {
     const data = await response.json();
     const message = data.choices?.[0]?.message ?? {};
-    const thinking = message.reasoning_content ?? message.reasoning ?? "";
+    const thinkingEnabled = upstreamBody.chat_template_kwargs?.enable_thinking === true;
+    const thinking = thinkingEnabled ? (message.reasoning_content ?? message.reasoning ?? "") : "";
     const content = lmStudioMessageText(message.content);
     const toolCalls = normalizeOllamaToolCalls(message.tool_calls);
     const output = [];
@@ -1098,6 +1144,7 @@ async function callLMStudio({ req, body, route, lmStudioBaseUrl, res, debugAuth 
   let emittedContent = false;
   let emittedThinking = false;
   let completedThinking = false;
+  const thinkingEnabled = upstreamBody.chat_template_kwargs?.enable_thinking === true;
   const toolCallDeltas = [];
 
   const handleLine = (line) => {
@@ -1107,7 +1154,7 @@ async function callLMStudio({ req, body, route, lmStudioBaseUrl, res, debugAuth 
     if (!payload || payload === "[DONE]") return;
     const event = JSON.parse(payload);
     const delta = event.choices?.[0]?.delta ?? {};
-    const reasoningDelta = delta.reasoning_content ?? delta.reasoning ?? "";
+    const reasoningDelta = thinkingEnabled ? (delta.reasoning_content ?? delta.reasoning ?? "") : "";
     const contentDelta = lmStudioMessageText(delta.content);
     if (reasoningDelta) {
       if (!emittedThinking) writeReasoningStart(res, { id, outputIndex: 0 });
@@ -1135,6 +1182,7 @@ async function callLMStudio({ req, body, route, lmStudioBaseUrl, res, debugAuth 
   };
 
   for await (const chunk of response.body) {
+    signal.throwIfAborted();
     buffer += decoder.decode(chunk, { stream: true });
     const lines = buffer.split(/\r?\n/);
     buffer = lines.pop() ?? "";
@@ -1179,7 +1227,7 @@ async function callLMStudio({ req, body, route, lmStudioBaseUrl, res, debugAuth 
   });
 }
 
-async function forwardOpenAI({ req, body, openaiBaseUrl, apiKey, res, route, debugAuth }) {
+async function forwardOpenAI({ req, body, openaiBaseUrl, apiKey, res, route, debugAuth, signal }) {
   const url = upstreamResponsesUrl(req.url, openaiBaseUrl);
   const headers = forwardedHeaders(req.headers);
   headers["content-type"] = "application/json";
@@ -1197,20 +1245,17 @@ async function forwardOpenAI({ req, body, openaiBaseUrl, apiKey, res, route, deb
   });
 
   let upstream;
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 60000);
   try {
     upstream = await fetch(url, {
       method: req.method,
       headers,
       body: upstreamBody,
-      signal: controller.signal,
+      signal,
     });
+    signal.throwIfAborted();
   } catch (error) {
-    debugLogError({ enabled: debugAuth, req, error, stage: "openai_fetch" });
+    if (!signal.aborted) debugLogError({ enabled: debugAuth, req, error, stage: "openai_fetch" });
     throw error;
-  } finally {
-    clearTimeout(timeout);
   }
 
   const upstreamHeaders = Object.fromEntries(upstream.headers.entries());
@@ -1235,13 +1280,15 @@ async function forwardOpenAI({ req, body, openaiBaseUrl, apiKey, res, route, deb
   try {
     if (upstream.body) {
       for await (const chunk of upstream.body) {
+        signal.throwIfAborted();
         if (!res.write(chunk)) {
-          await new Promise((resolve) => res.once("drain", resolve));
+          await waitForDrain(res, signal);
         }
       }
     }
     res.end();
   } catch (error) {
+    if (signal.aborted) throw error;
     debugLogError({ enabled: debugAuth, req, error, stage: "openai_stream" });
     if (!res.destroyed) res.destroy(error);
     return;
@@ -1311,6 +1358,8 @@ export function createHydraHandler({
   appServerBridge = null,
 }) {
   async function hydraHandler(req, res) {
+    let cancellation;
+    let route;
     try {
       if (req.method === "GET" && req.url === "/healthz") {
         jsonResponse(req, res, 200, { ok: true }, debugAuth);
@@ -1337,6 +1386,28 @@ export function createHydraHandler({
         return;
       }
 
+      const controller = new AbortController();
+      let cancellationStage;
+      const abortForClient = (stage) => {
+        if (controller.signal.aborted || res.writableEnded) return;
+        cancellationStage = stage;
+        controller.abort(new DOMException("Responses client disconnected", "AbortError"));
+      };
+      const onAborted = () => abortForClient("request_aborted");
+      const onResponseClose = () => abortForClient("response_closed");
+      req.on("aborted", onAborted);
+      res.on("close", onResponseClose);
+      cancellation = {
+        signal: controller.signal,
+        get stage() {
+          return cancellationStage;
+        },
+        cleanup() {
+          req.off("aborted", onAborted);
+          res.off("close", onResponseClose);
+        },
+      };
+
       let body;
       try {
         body = await readBody(req);
@@ -1345,7 +1416,7 @@ export function createHydraHandler({
         throw error;
       }
       const routes = await loadRoutes(paths);
-      const route = routes[body?.model];
+      route = routes[body?.model];
       debugLogRequest({ enabled: debugAuth, req, body, route });
       if (!route) {
         jsonResponse(
@@ -1359,19 +1430,29 @@ export function createHydraHandler({
       }
 
       if (route.provider === "ollama") {
-        await callOllama({ req, body, route, ollamaBaseUrl, res, debugAuth, appServerBridge });
+        await callOllama({ req, body, route, ollamaBaseUrl, res, debugAuth, appServerBridge, signal: cancellation.signal });
         return;
       }
 
       if (route.provider === "lmstudio") {
-        await callLMStudio({ req, body, route, lmStudioBaseUrl, res, debugAuth });
+        await callLMStudio({ req, body, route, lmStudioBaseUrl, res, debugAuth, signal: cancellation.signal });
         return;
       }
 
-      await forwardOpenAI({ req, body, openaiBaseUrl, apiKey, res, route, debugAuth });
+      await forwardOpenAI({ req, body, openaiBaseUrl, apiKey, res, route, debugAuth, signal: cancellation.signal });
     } catch (error) {
+      if (cancellation?.stage) {
+        debugLogCancellation({ enabled: debugAuth, req, route, stage: cancellation.stage });
+        return;
+      }
       debugLogError({ enabled: debugAuth, req, error, stage: "handler" });
-      jsonResponse(req, res, 500, { error: { message: error.message } }, debugAuth);
+      if (!res.headersSent && !res.destroyed && !res.writableEnded) {
+        jsonResponse(req, res, 500, { error: { message: error.message } }, debugAuth);
+      } else if (!res.destroyed && !res.writableEnded) {
+        res.destroy(error);
+      }
+    } finally {
+      cancellation?.cleanup();
     }
   }
 

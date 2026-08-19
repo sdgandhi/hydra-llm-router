@@ -107,6 +107,20 @@ export function debugLogError({ enabled, req, error, stage }) {
   writeDebugLine("hydra-error", payload);
 }
 
+export function debugLogCancellation({ enabled, req, route, stage }) {
+  if (!enabled) return;
+  const payload = {
+    at: new Date().toISOString(),
+    method: req?.method,
+    url: req?.url,
+    stage,
+    headers: req ? sanitizeHeaders(req.headers) : undefined,
+    route,
+    outcome: "client_cancelled",
+  };
+  writeDebugLine("hydra-cancelled", payload);
+}
+
 export function configureDebugLog(filePath) {
   globalThis.__HYDRA_DEBUG_LOG_PATH = filePath;
 }

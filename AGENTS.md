@@ -18,6 +18,8 @@ This project is a local Codex Desktop model router. Keep changes small and valid
 - The correct default cloud upstream for Desktop OAuth is `https://chatgpt.com/backend-api/codex`.
 - Forwarding Desktop OAuth tokens to `https://api.openai.com/v1` returns `401`; only use that upstream with `OPENAI_API_KEY`.
 - Desktop sends `POST /responses` for the working request path.
+- Every Responses request owns an `AbortController`. Abort upstream LM Studio, Ollama, and cloud fetches when the request is aborted or the downstream response closes before `res.writableEnded`; remove listeners when the request finishes.
+- Client-driven `AbortError` is an expected cancellation outcome. Do not write a 500 after the downstream client is gone, and do not treat the normal close after `res.end()` as cancellation.
 - Desktop may first attempt a WebSocket upgrade to `/responses` with `openai-beta: responses_websockets=2026-02-06`; Hydra currently rejects upgrades with `426` so Desktop falls back to HTTP `POST /responses`.
 - Desktop compresses request bodies with `content-encoding: zstd`; always decode before JSON parsing.
 - Forward cloud requests transparently enough to keep Codex-specific headers such as `chatgpt-account-id`, `session-id`, `x-codex-*`, `openai-beta`, and `authorization`.
@@ -31,6 +33,8 @@ This project is a local Codex Desktop model router. Keep changes small and valid
 - LM Studio discovery prefers `/api/v1/models` and falls back to the OpenAI-compatible `/v1/models` endpoint. Only `llm` models from the native endpoint are included.
 - Local catalog entries advertise text, vision, reasoning, and tool support from provider metadata; local web search is only advertised for Ollama when the emulation is ready.
 - LM Studio requests use `/v1/chat/completions`; Ollama requests use `/api/chat`. Both are translated to/from Codex Responses-shaped requests.
+- Normalize Responses reasoning from `reasoning.effort`, `reasoning_effort`, and `reasoning_level`. For LM Studio, explicit `none` sets `chat_template_kwargs.enable_thinking` to `false` and forwards `reasoning_effort: "none"`; non-`none` sets thinking to `true` and forwards the normalized effort only when the route advertises thinking support.
+- Streaming LM Studio requests must remain incremental: forward `stream: true`, emit text deltas as `response.output_text.delta`, emit reasoning summaries only when thinking was enabled, then finish with `response.completed` and `data: [DONE]`.
 - `web_search_tool_type` must be a supported value such as `text`; using `unsupported` made Codex Desktop fail to parse the catalog.
 - Offline providers or providers with no chat models contribute no entries; cloud catalog generation must still succeed.
 

@@ -67,6 +67,14 @@ lmstudio/qwen/qwen3.6-27b
 
 The prefix avoids name collisions and lets Hydra choose the correct upstream deterministically.
 
+## Responses Reasoning and Streaming
+
+For LM Studio routes, Hydra normalizes `reasoning.effort`, `reasoning_effort`, and `reasoning_level` from Responses requests. An explicit `none` is translated to `chat_template_kwargs.enable_thinking: false` and LM Studio's documented `reasoning_effort: "none"`. A non-`none` effort enables the chat-template thinking mode and forwards the normalized `reasoning_effort` only when the route advertises thinking support. If reasoning is omitted, or a non-`none` effort targets a route without thinking capability, Hydra preserves the route's existing behavior without enabling thinking.
+
+With `stream: true`, Hydra sends a streaming LM Studio chat-completions request and translates chunks to Responses SSE as they arrive; it does not wait for the complete local response. Text is emitted as `response.output_text.delta`. Reasoning-summary events are emitted only when thinking was explicitly enabled, and an explicit `none` never emits them. Successful streams end with `response.completed` followed by `data: [DONE]`.
+
+Every Responses request has a request-scoped cancellation signal. If the client aborts the request or closes the downstream response before completion, Hydra aborts the active LM Studio, Ollama, or cloud fetch and stops consuming its stream. A normal completed socket close does not trigger cancellation.
+
 ## App Tools
 
 By default, `serve` starts a local `codex app-server --listen stdio://` bridge and exposes tools from the `codex_apps` MCP server to Ollama routes. That is how Ollama models can discover and call connected apps such as Gmail through the same tool catalog Desktop uses. LM Studio routes currently receive only the tools supplied by the request; they do not use the app-server bridge.
@@ -156,6 +164,8 @@ Debug logs are written to:
 ```
 
 Prompt text is not logged. Request bodies are summarized by shape, model, and key names. Sensitive headers are redacted, but header names and value lengths are retained for diagnostics.
+
+Client disconnects are logged as a distinct cancellation outcome rather than an upstream error. Cancellation logs contain routing and lifecycle metadata only, never request bodies or generated output.
 
 Codex Desktop currently sends Responses request bodies compressed with `content-encoding: zstd`. Hydra decodes compressed request bodies before parsing JSON.
 

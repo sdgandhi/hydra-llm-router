@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createServer as createHttpServer } from "node:http";
+import { createServer as createHttpServer, request as httpRequest } from "node:http";
 import { connect as connectNet } from "node:net";
 import { once } from "node:events";
 import { mkdtemp, writeFile, rm } from "node:fs/promises";
@@ -311,6 +311,53 @@ test("converts Responses requests to LM Studio chat completions", () => {
   );
 });
 
+test("disables LM Studio chat-template thinking for all supported none reasoning inputs", () => {
+  for (const reasoning of [
+    { reasoning: { effort: "none" } },
+    { reasoning_effort: "NONE" },
+    { reasoning_level: " none " },
+  ]) {
+    const request = buildLMStudioChatBody({
+      body: { input: "answer directly", ...reasoning },
+      route: { upstreamModel: "gemma", capabilities: { thinking: true } },
+      stream: true,
+    });
+    assert.deepEqual(request.chat_template_kwargs, { enable_thinking: false });
+    assert.equal(request.reasoning_effort, "none");
+  }
+});
+
+test("enables LM Studio chat-template thinking for non-none effort on thinking routes", () => {
+  const request = buildLMStudioChatBody({
+    body: { input: "reason", reasoning_effort: "medium" },
+    route: { upstreamModel: "gemma", capabilities: { thinking: true } },
+    stream: false,
+  });
+
+  assert.deepEqual(request.chat_template_kwargs, { enable_thinking: true });
+  assert.equal(request.reasoning_effort, "medium");
+});
+
+test("omits LM Studio thinking configuration when reasoning is omitted", () => {
+  const request = buildLMStudioChatBody({
+    body: { input: "hello" },
+    route: { upstreamModel: "gemma", capabilities: { thinking: true } },
+    stream: false,
+  });
+
+  assert.equal("chat_template_kwargs" in request, false);
+});
+
+test("does not enable LM Studio thinking on routes without thinking capability", () => {
+  const request = buildLMStudioChatBody({
+    body: { input: "hello", reasoning_level: "high" },
+    route: { upstreamModel: "plain", capabilities: { thinking: false } },
+    stream: false,
+  });
+
+  assert.equal("chat_template_kwargs" in request, false);
+});
+
 test("converts Responses function-call history for LM Studio follow-up turns", () => {
   const request = buildLMStudioChatBody({
     body: {
@@ -390,6 +437,338 @@ test("routes streaming LM Studio chat completions as Responses events", async ()
     assert.match(text, /hello /);
     assert.match(text, /locally/);
     assert.match(text, /response\.completed/);
+  } finally {
+    if (hydra?.listening) {
+      hydra.close();
+      await Promise.allSettled([once(hydra, "close")]);
+    }
+    globalThis.fetch = originalFetch;
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("emits the first LM Studio text delta before the upstream stream completes", async () => {
+  const tempDir = await mkdtemp(join(tmpdir(), "hydra-router-test-"));
+  const routesPath = join(tempDir, "routes.json");
+  await writeFile(
+    routesPath,
+    JSON.stringify({
+      "lmstudio/gemma": {
+        provider: "lmstudio",
+        upstreamModel: "gemma",
+        capabilities: { thinking: true },
+      },
+    }),
+  );
+  const originalFetch = globalThis.fetch;
+  const encoder = new TextEncoder();
+  let finishUpstream;
+  let upstreamFinished = false;
+  globalThis.fetch = async (_url, options) => {
+    assert.equal(JSON.parse(options.body).stream, true);
+    return new Response(
+      new ReadableStream({
+        start(controller) {
+          controller.enqueue(encoder.encode('data: {"choices":[{"delta":{"content":"first"}}]}\n\n'));
+          finishUpstream = () => {
+            upstreamFinished = true;
+            controller.enqueue(encoder.encode('data: {"choices":[{"delta":{"content":" second"}}]}\n\n'));
+            controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+            controller.close();
+          };
+        },
+      }),
+      { status: 200, headers: { "content-type": "text/event-stream" } },
+    );
+  };
+  let hydra;
+  try {
+    const handler = createHydraHandler({
+      paths: { routesPath },
+      ollamaBaseUrl: "http://127.0.0.1:11434",
+      lmStudioBaseUrl: "http://127.0.0.1:11239",
+      openaiBaseUrl: "https://chatgpt.com/backend-api/codex",
+    });
+    hydra = createHttpServer(handler);
+    hydra.listen(0, "127.0.0.1");
+    await once(hydra, "listening");
+
+    const response = await originalFetch(`http://127.0.0.1:${hydra.address().port}/responses`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "lmstudio/gemma", input: "hi", stream: true }),
+    });
+    const reader = response.body.getReader();
+    let received = "";
+    while (!received.includes("response.output_text.delta")) {
+      const { value, done } = await reader.read();
+      assert.equal(done, false);
+      received += new TextDecoder().decode(value);
+    }
+    assert.equal(upstreamFinished, false);
+    assert.match(received, /first/);
+
+    finishUpstream();
+    while (!(await reader.read()).done) {}
+  } finally {
+    if (hydra?.listening) {
+      hydra.close();
+      await Promise.allSettled([once(hydra, "close")]);
+    }
+    globalThis.fetch = originalFetch;
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("reasoning none suppresses LM Studio reasoning events while preserving completion", async () => {
+  const tempDir = await mkdtemp(join(tmpdir(), "hydra-router-test-"));
+  const routesPath = join(tempDir, "routes.json");
+  await writeFile(
+    routesPath,
+    JSON.stringify({
+      "lmstudio/gemma": { provider: "lmstudio", upstreamModel: "gemma", capabilities: { thinking: true } },
+    }),
+  );
+  const originalFetch = globalThis.fetch;
+  let upstreamRequest;
+  let hydra;
+  globalThis.fetch = async (_url, options) => {
+    upstreamRequest = JSON.parse(options.body);
+    return new Response(
+      'data: {"choices":[{"delta":{"reasoning_content":"hidden"}}]}\n\n' +
+        'data: {"choices":[{"delta":{"content":"answer"}}]}\n\n' +
+        "data: [DONE]\n\n",
+      { status: 200, headers: { "content-type": "text/event-stream" } },
+    );
+  };
+  try {
+    const handler = createHydraHandler({
+      paths: { routesPath },
+      ollamaBaseUrl: "http://127.0.0.1:11434",
+      lmStudioBaseUrl: "http://127.0.0.1:11239",
+      openaiBaseUrl: "https://chatgpt.com/backend-api/codex",
+    });
+    hydra = createHttpServer(handler);
+    hydra.listen(0, "127.0.0.1");
+    await once(hydra, "listening");
+    const response = await originalFetch(`http://127.0.0.1:${hydra.address().port}/responses`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "lmstudio/gemma",
+        input: "hi",
+        stream: true,
+        reasoning: { effort: "none" },
+      }),
+    });
+    const text = await response.text();
+    assert.deepEqual(upstreamRequest.chat_template_kwargs, { enable_thinking: false });
+    assert.doesNotMatch(text, /reasoning_summary/);
+    assert.match(text, /response\.output_text\.delta/);
+    assert.match(text, /response\.completed/);
+    assert.match(text, /data: \[DONE\]/);
+  } finally {
+    if (hydra?.listening) {
+      hydra.close();
+      await Promise.allSettled([once(hydra, "close")]);
+    }
+    globalThis.fetch = originalFetch;
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("disconnecting a streaming client aborts LM Studio without attempting a 500 response", async () => {
+  const tempDir = await mkdtemp(join(tmpdir(), "hydra-router-test-"));
+  const routesPath = join(tempDir, "routes.json");
+  await writeFile(
+    routesPath,
+    JSON.stringify({
+      "lmstudio/gemma": { provider: "lmstudio", upstreamModel: "gemma", capabilities: { thinking: true } },
+    }),
+  );
+  const originalFetch = globalThis.fetch;
+  const statuses = [];
+  let upstreamSignal;
+  let upstreamAborted = false;
+  let resolveUpstreamAbort;
+  const upstreamAbort = new Promise((resolve) => {
+    resolveUpstreamAbort = resolve;
+  });
+  let hydra;
+  globalThis.fetch = async (_url, options) => {
+    upstreamSignal = options.signal;
+    return new Response(
+      new ReadableStream({
+        start(controller) {
+          options.signal.addEventListener(
+            "abort",
+            () => {
+              upstreamAborted = true;
+              resolveUpstreamAbort();
+              controller.error(options.signal.reason);
+            },
+            { once: true },
+          );
+        },
+      }),
+      { status: 200, headers: { "content-type": "text/event-stream" } },
+    );
+  };
+  try {
+    const handler = createHydraHandler({
+      paths: { routesPath },
+      ollamaBaseUrl: "http://127.0.0.1:11434",
+      lmStudioBaseUrl: "http://127.0.0.1:11239",
+      openaiBaseUrl: "https://chatgpt.com/backend-api/codex",
+    });
+    hydra = createHttpServer((req, res) => {
+      const writeHead = res.writeHead;
+      res.writeHead = function recordStatus(status, ...args) {
+        statuses.push(status);
+        return writeHead.call(this, status, ...args);
+      };
+      return handler(req, res);
+    });
+    hydra.listen(0, "127.0.0.1");
+    await once(hydra, "listening");
+
+    await new Promise((resolve, reject) => {
+      const request = httpRequest(
+        {
+          host: "127.0.0.1",
+          port: hydra.address().port,
+          path: "/responses",
+          method: "POST",
+          headers: { "content-type": "application/json" },
+        },
+        (response) => {
+          response.once("data", () => {
+            response.destroy();
+            request.destroy();
+            resolve();
+          });
+        },
+      );
+      request.once("error", (error) => {
+        if (error.code === "ECONNRESET") resolve();
+        else reject(error);
+      });
+      request.end(JSON.stringify({ model: "lmstudio/gemma", input: "hi", stream: true }));
+    });
+    await Promise.race([
+      upstreamAbort,
+      new Promise((_, reject) => setTimeout(() => reject(new Error("upstream abort timed out")), 1000)),
+    ]);
+
+    assert.equal(upstreamSignal instanceof AbortSignal, true);
+    assert.equal(upstreamSignal.aborted, true);
+    assert.equal(upstreamAborted, true);
+    assert.deepEqual(statuses, [200]);
+  } finally {
+    if (hydra?.listening) {
+      hydra.close();
+      await Promise.allSettled([once(hydra, "close")]);
+    }
+    globalThis.fetch = originalFetch;
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("normal completion leaves the request-scoped upstream signal un-aborted", async () => {
+  const tempDir = await mkdtemp(join(tmpdir(), "hydra-router-test-"));
+  const routesPath = join(tempDir, "routes.json");
+  await writeFile(
+    routesPath,
+    JSON.stringify({
+      "lmstudio/gemma": { provider: "lmstudio", upstreamModel: "gemma", capabilities: {} },
+    }),
+  );
+  const originalFetch = globalThis.fetch;
+  let upstreamSignal;
+  let hydra;
+  globalThis.fetch = async (_url, options) => {
+    upstreamSignal = options.signal;
+    return new Response(
+      'data: {"choices":[{"delta":{"content":"done"}}]}\n\ndata: [DONE]\n\n',
+      { status: 200, headers: { "content-type": "text/event-stream" } },
+    );
+  };
+  try {
+    const handler = createHydraHandler({
+      paths: { routesPath },
+      ollamaBaseUrl: "http://127.0.0.1:11434",
+      lmStudioBaseUrl: "http://127.0.0.1:11239",
+      openaiBaseUrl: "https://chatgpt.com/backend-api/codex",
+    });
+    hydra = createHttpServer(handler);
+    hydra.listen(0, "127.0.0.1");
+    await once(hydra, "listening");
+    const response = await originalFetch(`http://127.0.0.1:${hydra.address().port}/responses`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "lmstudio/gemma", input: "hi", stream: true }),
+    });
+    await response.text();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(upstreamSignal.aborted, false);
+  } finally {
+    if (hydra?.listening) {
+      hydra.close();
+      await Promise.allSettled([once(hydra, "close")]);
+    }
+    globalThis.fetch = originalFetch;
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("Ollama and OpenAI forwarding receive request-scoped abort signals", async () => {
+  const tempDir = await mkdtemp(join(tmpdir(), "hydra-router-test-"));
+  const routesPath = join(tempDir, "routes.json");
+  await writeFile(
+    routesPath,
+    JSON.stringify({
+      "ollama/plain": { provider: "ollama", upstreamModel: "plain", capabilities: {} },
+      "gpt-cloud": { provider: "openai", upstreamModel: "gpt-cloud" },
+    }),
+  );
+  const originalFetch = globalThis.fetch;
+  const signals = [];
+  let hydra;
+  globalThis.fetch = async (url, options) => {
+    signals.push({ url: String(url), signal: options.signal });
+    if (String(url).endsWith("/api/chat")) {
+      return new Response(JSON.stringify({ message: { content: "local" } }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    return new Response(JSON.stringify({ id: "resp_cloud", status: "completed", output: [] }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  };
+  try {
+    const handler = createHydraHandler({
+      paths: { routesPath },
+      ollamaBaseUrl: "http://127.0.0.1:11434",
+      lmStudioBaseUrl: "http://127.0.0.1:11239",
+      openaiBaseUrl: "https://chatgpt.com/backend-api/codex",
+    });
+    hydra = createHttpServer(handler);
+    hydra.listen(0, "127.0.0.1");
+    await once(hydra, "listening");
+
+    for (const model of ["ollama/plain", "gpt-cloud"]) {
+      const response = await originalFetch(`http://127.0.0.1:${hydra.address().port}/responses`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ model, input: "hi", stream: false }),
+      });
+      assert.equal(response.status, 200);
+      await response.text();
+    }
+    assert.equal(signals.length, 2);
+    assert.equal(signals.every(({ signal }) => signal instanceof AbortSignal && !signal.aborted), true);
   } finally {
     if (hydra?.listening) {
       hydra.close();
