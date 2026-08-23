@@ -245,9 +245,9 @@ export function buildLMStudioChatBody({ body, route, stream }) {
     max_tokens: body.max_output_tokens,
   };
   const reasoningEffort = normalizedReasoningEffort(body);
-  if (reasoningEffort === "none") {
+  if (reasoningEffort === "none" || reasoningEffort === "low") {
     lmStudioBody.chat_template_kwargs = { enable_thinking: false };
-    lmStudioBody.reasoning_effort = reasoningEffort;
+    lmStudioBody.reasoning_effort = "none";
   } else if (reasoningEffort !== undefined && capabilities.thinking) {
     lmStudioBody.chat_template_kwargs = { enable_thinking: true };
     lmStudioBody.reasoning_effort = reasoningEffort;

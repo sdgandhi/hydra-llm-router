@@ -3,9 +3,19 @@ const THINKING_REASONING_LEVEL = {
   effort: "medium",
   description: "Use Ollama thinking mode when supported by the local model.",
 };
-const LMSTUDIO_THINKING_REASONING_LEVEL = {
-  effort: "medium",
-  description: "Use LM Studio reasoning when supported by the local model.",
+const LMSTUDIO_REASONING_LEVELS = {
+  low: {
+    effort: "low",
+    description: "Disable LM Studio reasoning for this chat.",
+  },
+  medium: {
+    effort: "medium",
+    description: "Use LM Studio reasoning when supported by the local model.",
+  },
+  high: {
+    effort: "high",
+    description: "Use a high amount of LM Studio reasoning.",
+  },
 };
 
 export function normalizeOllamaSlug(name) {
@@ -69,6 +79,27 @@ function lmStudioContextWindow(model) {
   return DEFAULT_LOCAL_CONTEXT_WINDOW;
 }
 
+function lmStudioReasoningLevels(model) {
+  const reasoning = model.capabilities?.reasoning;
+  if (!reasoning) {
+    return {
+      defaultLevel: "medium",
+      supportedLevels: Object.values(LMSTUDIO_REASONING_LEVELS),
+    };
+  }
+
+  const advertised = Array.isArray(reasoning.allowed_options) ? reasoning.allowed_options : [];
+  const normalized = advertised.map((option) => (option === "off" ? "low" : option === "on" ? "medium" : option));
+  const efforts = ["low", "medium", "high", ...normalized].filter(
+    (effort, index, values) => LMSTUDIO_REASONING_LEVELS[effort] && values.indexOf(effort) === index,
+  );
+
+  return {
+    defaultLevel: "medium",
+    supportedLevels: efforts.map((effort) => LMSTUDIO_REASONING_LEVELS[effort]),
+  };
+}
+
 function routeCapabilities(modelInfo, webSearchReady) {
   const capabilities = capabilitySet(modelInfo);
   const tools = capabilities.has("tools");
@@ -117,6 +148,7 @@ export function localModelFromTemplate(template, ollamaModel, priority, { modelI
 export function lmStudioModelFromTemplate(template, lmStudioModel, priority) {
   const name = lmStudioModel.id;
   const capabilities = lmStudioRouteCapabilities(lmStudioModel);
+  const reasoningLevels = lmStudioReasoningLevels(lmStudioModel);
   const model = cloneWithoutNux(template);
   model.slug = normalizeLMStudioSlug(name);
   model.display_name = lmStudioDisplayName(name);
@@ -126,8 +158,8 @@ export function lmStudioModelFromTemplate(template, lmStudioModel, priority) {
   model.priority = priority;
   model.context_window = lmStudioContextWindow(lmStudioModel);
   model.max_context_window = model.context_window;
-  model.default_reasoning_level = capabilities.thinking ? LMSTUDIO_THINKING_REASONING_LEVEL.effort : "none";
-  model.supported_reasoning_levels = capabilities.thinking ? [LMSTUDIO_THINKING_REASONING_LEVEL] : [];
+  model.default_reasoning_level = reasoningLevels.defaultLevel;
+  model.supported_reasoning_levels = reasoningLevels.supportedLevels;
   model.supports_reasoning_summaries = true;
   model.support_verbosity = false;
   model.default_verbosity = "low";

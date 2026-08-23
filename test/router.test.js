@@ -327,6 +327,17 @@ test("disables LM Studio chat-template thinking for all supported none reasoning
   }
 });
 
+test("maps the Desktop-visible LM Studio low effort to thinking off", () => {
+  const request = buildLMStudioChatBody({
+    body: { input: "answer directly", reasoning: { effort: "low" } },
+    route: { upstreamModel: "gemma", capabilities: { thinking: false } },
+    stream: false,
+  });
+
+  assert.deepEqual(request.chat_template_kwargs, { enable_thinking: false });
+  assert.equal(request.reasoning_effort, "none");
+});
+
 test("enables LM Studio chat-template thinking for non-none effort on thinking routes", () => {
   const request = buildLMStudioChatBody({
     body: { input: "reason", reasoning_effort: "medium" },

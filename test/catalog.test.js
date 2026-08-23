@@ -254,11 +254,73 @@ test("adds models advertised by LM Studio", async () => {
   assert.equal(result.catalog.models[1].context_window, 65536);
   assert.deepEqual(result.catalog.models[1].input_modalities, ["text", "image"]);
   assert.equal(result.catalog.models[1].default_reasoning_level, "medium");
+  assert.deepEqual(result.catalog.models[1].supported_reasoning_levels, [
+    { effort: "low", description: "Disable LM Studio reasoning for this chat." },
+    { effort: "medium", description: "Use LM Studio reasoning when supported by the local model." },
+    { effort: "high", description: "Use a high amount of LM Studio reasoning." },
+  ]);
   assert.deepEqual(result.routes["lmstudio/qwen3-4b"], {
     provider: "lmstudio",
     upstreamModel: "qwen3-4b",
     capabilities: { thinking: true, tools: true, vision: true, webSearch: false },
   });
+});
+
+test("advertises LM Studio effort levels and default from native metadata", async () => {
+  const result = await buildCatalog({
+    sourceCatalog: { models: [{ slug: "gpt-test", display_name: "GPT Test", visibility: "list" }] },
+    ollamaBaseUrl: "http://127.0.0.1:11434",
+    lmStudioBaseUrl: "http://127.0.0.1:11239",
+    fetchImpl: async (url) => {
+      if (url.port === "11434") throw new Error("Ollama offline");
+      return {
+        ok: true,
+        json: async () => ({
+          models: [
+            {
+              type: "llm",
+              key: "gpt-oss",
+              capabilities: {
+                reasoning: { allowed_options: ["low", "medium", "high"], default: "low" },
+              },
+            },
+          ],
+        }),
+      };
+    },
+  });
+
+  const local = result.catalog.models[1];
+  assert.equal(local.default_reasoning_level, "medium");
+  assert.deepEqual(
+    local.supported_reasoning_levels.map(({ effort }) => effort),
+    ["low", "medium", "high"],
+  );
+});
+
+test("advertises Desktop-supported effort options when LM Studio omits reasoning metadata", async () => {
+  const result = await buildCatalog({
+    sourceCatalog: { models: [{ slug: "gpt-test", display_name: "GPT Test", visibility: "list" }] },
+    ollamaBaseUrl: "http://127.0.0.1:11434",
+    lmStudioBaseUrl: "http://127.0.0.1:11239",
+    fetchImpl: async (url) => {
+      if (url.port === "11434") throw new Error("Ollama offline");
+      return {
+        ok: true,
+        json: async () => ({
+          models: [{ type: "llm", key: "gemma-4-12b-it-mlx", capabilities: { vision: true } }],
+        }),
+      };
+    },
+  });
+
+  const local = result.catalog.models[1];
+  assert.equal(local.default_reasoning_level, "medium");
+  assert.deepEqual(
+    local.supported_reasoning_levels.map(({ effort }) => effort),
+    ["low", "medium", "high"],
+  );
+  assert.equal(result.routes["lmstudio/gemma-4-12b-it-mlx"].capabilities.thinking, false);
 });
 
 test("omits local providers that advertise no models", async () => {

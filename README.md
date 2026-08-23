@@ -69,7 +69,7 @@ The prefix avoids name collisions and lets Hydra choose the correct upstream det
 
 ## Responses Reasoning and Streaming
 
-For LM Studio routes, Hydra normalizes `reasoning.effort`, `reasoning_effort`, and `reasoning_level` from Responses requests. An explicit `none` is translated to `chat_template_kwargs.enable_thinking: false` and LM Studio's documented `reasoning_effort: "none"`. A non-`none` effort enables the chat-template thinking mode and forwards the normalized `reasoning_effort` only when the route advertises thinking support. If reasoning is omitted, or a non-`none` effort targets a route without thinking capability, Hydra preserves the route's existing behavior without enabling thinking.
+For LM Studio routes, Hydra normalizes `reasoning.effort`, `reasoning_effort`, and `reasoning_level` from Responses requests. Codex Desktop's visible `low` preset and an explicit `none` are translated to `chat_template_kwargs.enable_thinking: false` and LM Studio's documented `reasoning_effort: "none"`. Other efforts enable the chat-template thinking mode and are forwarded only when the route advertises thinking support. If reasoning is omitted, or another effort targets a route without thinking capability, Hydra preserves the route's existing behavior without enabling thinking.
 
 With `stream: true`, Hydra sends a streaming LM Studio chat-completions request and translates chunks to Responses SSE as they arrive; it does not wait for the complete local response. Text is emitted as `response.output_text.delta`. Reasoning-summary events are emitted only when thinking was explicitly enabled, and an explicit `none` never emits them. Successful streams end with `response.completed` followed by `data: [DONE]`.
 
