@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
 import { access, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -1362,6 +1363,10 @@ async function callLMStudio({ req, body, route, lmStudioBaseUrl, res, debugAuth,
       messages,
       tools: toolBroker.modelTools,
     });
+    // LM Studio needs a request ID to stop prompt processing when the HTTP
+    // client disconnects. Without one, recent runtimes treat cancellation as
+    // a deprecated no-op and continue evaluating the prompt.
+    upstreamBody.request_id = `hydra-${randomUUID()}`;
     debugLogUpstream({
       enabled: debugAuth,
       req,

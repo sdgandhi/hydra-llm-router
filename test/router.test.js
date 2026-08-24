@@ -758,6 +758,7 @@ test("disconnecting a streaming client aborts LM Studio without attempting a 500
   const originalFetch = globalThis.fetch;
   const statuses = [];
   let upstreamSignal;
+  let upstreamRequest;
   let upstreamAborted = false;
   let resolveUpstreamAbort;
   const upstreamAbort = new Promise((resolve) => {
@@ -766,6 +767,7 @@ test("disconnecting a streaming client aborts LM Studio without attempting a 500
   let hydra;
   globalThis.fetch = async (_url, options) => {
     upstreamSignal = options.signal;
+    upstreamRequest = JSON.parse(options.body);
     return new Response(
       new ReadableStream({
         start(controller) {
@@ -832,6 +834,7 @@ test("disconnecting a streaming client aborts LM Studio without attempting a 500
     assert.equal(upstreamSignal instanceof AbortSignal, true);
     assert.equal(upstreamSignal.aborted, true);
     assert.equal(upstreamAborted, true);
+    assert.match(upstreamRequest.request_id, /^hydra-[0-9a-f-]{36}$/);
     assert.deepEqual(statuses, [200]);
   } finally {
     if (hydra?.listening) {
