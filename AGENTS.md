@@ -71,6 +71,11 @@ For live Desktop verification:
 8. If app tools are enabled, select a tool-capable Ollama model and verify an app-server tool call; verify `--app-tools off` disables the bridge.
 9. Restart without debug logging for normal use.
 
+## Change Delivery
+
+- After completing and verifying repository work, commit all in-scope changes and push the current branch to its configured remote before handing the work back to the user.
+- Do not include unrelated user changes in the commit.
+
 ## Safety Constraints
 
 - Never overwrite unrelated user edits in `~/.codex/config.toml`.
