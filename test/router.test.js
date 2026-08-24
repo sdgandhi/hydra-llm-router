@@ -10,11 +10,13 @@ import { zstdCompressSync } from "node:zlib";
 import {
   buildOllamaChatBody,
   buildLMStudioChatBody,
+  createLocalControlMarkerFilter,
   createHydraHandler,
   decodeBody,
   emulatedToolStatuses,
   normalizeOllamaTools,
   normalizeResponsesInput,
+  stripLocalControlMarkers,
   upstreamResponsesUrl,
 } from "../src/router.js";
 
@@ -102,6 +104,20 @@ test("decodes zstd-compressed request bodies from Codex Desktop", () => {
   assert.equal(decodeBody(compressed, "zstd").toString("utf8"), payload.toString("utf8"));
 });
 
+test("strips local-model channel control markers", () => {
+  assert.equal(stripLocalControlMarkers("<|channel>thought\n<channel|>Hello"), "Hello");
+  assert.equal(stripLocalControlMarkers("Before <|channel|>analysis<|message|>after"), "Before after");
+});
+
+test("strips local-model control markers split across streaming chunks", () => {
+  const filter = createLocalControlMarkerFilter();
+  const output = ["prefix ", "<|chan", "nel>thought\n<chan", "nel|>", "suffix"]
+    .map((chunk) => filter.push(chunk))
+    .join("") + filter.finish();
+
+  assert.equal(output, "prefix suffix");
+});
+
 test("converts Responses function tools to Ollama tools", () => {
   assert.deepEqual(
     normalizeOllamaTools([
@@ -169,6 +185,148 @@ test("converts nested function tools to Ollama tools", () => {
       },
     ],
   );
+});
+
+test("flattens Codex namespace tools for local providers", () => {
+  assert.deepEqual(
+    normalizeOllamaTools([
+      {
+        type: "namespace",
+        name: "functions",
+        tools: [
+          {
+            name: "exec_command",
+            description: "Run a command",
+            parameters: {
+              type: "object",
+              properties: { cmd: { type: "string" } },
+              required: ["cmd"],
+            },
+          },
+        ],
+      },
+    ]),
+    [
+      {
+        type: "function",
+        function: {
+          name: "exec_command",
+          description: "Run a command",
+          parameters: {
+            type: "object",
+            properties: { cmd: { type: "string" } },
+            required: ["cmd"],
+          },
+        },
+      },
+    ],
+  );
+});
+
+test("wraps Responses custom tools for local function calling", () => {
+  assert.deepEqual(
+    normalizeOllamaTools([
+      {
+        type: "custom",
+        name: "apply_patch",
+        description: "Apply a patch",
+        format: { type: "grammar", syntax: "lark", definition: "start: /.+/" },
+      },
+    ]),
+    [
+      {
+        type: "function",
+        function: {
+          name: "apply_patch",
+          description: "Apply a patch",
+          parameters: {
+            type: "object",
+            properties: { input: { type: "string", description: "Free-form input for this tool." } },
+            required: ["input"],
+          },
+        },
+        _hydraResponseTool: { type: "custom" },
+      },
+    ],
+  );
+});
+
+test("does not advertise request_user_input to local models in Default mode", () => {
+  const body = {
+    input: [
+      {
+        role: "developer",
+        content: [
+          {
+            type: "input_text",
+            text: "<collaboration_mode>\n# Collaboration Mode: Default\n</collaboration_mode>",
+          },
+        ],
+      },
+    ],
+    tools: [
+      { type: "function", name: "request_user_input" },
+      { type: "function", name: "exec_command" },
+    ],
+  };
+
+  const lmStudio = buildLMStudioChatBody({ body, route: { upstreamModel: "gemma" }, stream: true });
+  const ollama = buildOllamaChatBody({ body, route: { upstreamModel: "gemma" }, stream: true });
+
+  assert.deepEqual(lmStudio.tools.map((tool) => tool.function.name), ["exec_command"]);
+  assert.deepEqual(ollama.tools.map((tool) => tool.function.name), ["exec_command"]);
+});
+
+test("does not advertise request_user_input when collaboration mode is omitted", () => {
+  const body = {
+    input: [{ role: "user", content: "Run a command" }],
+    tools: [
+      { type: "function", name: "request_user_input" },
+      { type: "function", name: "exec_command" },
+    ],
+  };
+
+  const lmStudio = buildLMStudioChatBody({ body, route: { upstreamModel: "gemma" }, stream: true });
+  const ollama = buildOllamaChatBody({ body, route: { upstreamModel: "gemma" }, stream: true });
+
+  assert.deepEqual(lmStudio.tools.map((tool) => tool.function.name), ["exec_command"]);
+  assert.deepEqual(ollama.tools.map((tool) => tool.function.name), ["exec_command"]);
+});
+
+test("preserves request_user_input for local models in Plan mode", () => {
+  const body = {
+    input: [
+      {
+        role: "developer",
+        content: [
+          {
+            type: "input_text",
+            text: "<collaboration_mode>\n# Collaboration Mode: Plan\n</collaboration_mode>",
+          },
+        ],
+      },
+    ],
+    tools: [{ type: "function", name: "request_user_input" }],
+  };
+
+  const request = buildLMStudioChatBody({ body, route: { upstreamModel: "gemma" }, stream: true });
+
+  assert.deepEqual(request.tools.map((tool) => tool.function.name), ["request_user_input"]);
+});
+
+test("does not advertise unsupported search tools to LM Studio", () => {
+  const body = {
+    tools: [
+      { type: "function", name: "exec_command" },
+      { type: "web_search" },
+      { type: "web_search_preview" },
+      { type: "tool_search" },
+    ],
+  };
+
+  const request = buildLMStudioChatBody({ body, route: { upstreamModel: "gemma" }, stream: true });
+
+  assert.deepEqual(request.tools.map((tool) => tool.function.name), ["exec_command"]);
 });
 
 test("converts hosted search tools to emulated Ollama tools", () => {
@@ -828,23 +986,25 @@ test("routes local app tool calls through the App Server bridge", async () => {
   let hydra = null;
   globalThis.fetch = async (url, options) => {
     fetchCalls.push(JSON.parse(options.body));
-    const body =
-      fetchCalls.length === 1
-        ? ndjsonStream([
-            {
-              message: {
-                tool_calls: [
-                  {
-                    function: {
-                      name: "gmail_search_emails",
-                      arguments: { query: "-in:spam -in:trash", max_results: 3 },
-                    },
-                  },
-                ],
-              },
-              done: true,
+    const body = fetchCalls.length === 1
+      ? ndjsonStream([{
+          message: {
+            tool_calls: [{ function: { name: "tool_search", arguments: { query: "gmail search emails" } } }],
+          },
+          done: true,
+        }])
+      : fetchCalls.length === 2
+        ? ndjsonStream([{
+            message: {
+              tool_calls: [{
+                function: {
+                  name: "gmail_search_emails",
+                  arguments: { query: "-in:spam -in:trash", max_results: 3 },
+                },
+              }],
             },
-          ])
+            done: true,
+          }])
         : ndjsonStream([{ message: { content: "Latest email" }, done: true }]);
     return new Response(body, { status: 200, headers: { "content-type": "application/x-ndjson" } });
   };
@@ -874,15 +1034,17 @@ test("routes local app tool calls through the App Server bridge", async () => {
 
     assert.equal(response.status, 200);
     assert.match(text, /Latest email/);
-    assert.equal(fetchCalls[0].tools.some((tool) => tool.function.name === "gmail_search_emails"), true);
+    assert.equal(fetchCalls[0].tools.some((tool) => tool.function.name === "tool_search"), true);
+    assert.equal(fetchCalls[0].tools.some((tool) => tool.function.name === "gmail_search_emails"), false);
+    assert.equal(fetchCalls[1].tools.some((tool) => tool.function.name === "gmail_search_emails"), true);
     assert.deepEqual(bridgeCalls, [
       {
         name: "gmail_search_emails",
         argumentsText: JSON.stringify({ query: "-in:spam -in:trash", max_results: 3 }),
       },
     ]);
-    assert.equal(fetchCalls.length, 2);
-    assert.equal(fetchCalls[1].messages.at(-1).role, "tool");
+    assert.equal(fetchCalls.length, 3);
+    assert.equal(fetchCalls[2].messages.at(-1).role, "tool");
   } finally {
     if (hydra?.listening) {
       hydra.close();
@@ -980,6 +1142,240 @@ test("routes non-streaming local app tool calls back through Ollama", async () =
       await Promise.allSettled([once(hydra, "close")]);
     }
     globalThis.fetch = originalFetch;
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("routes streaming LM Studio plugin calls through the App Server bridge", async () => {
+  const tempDir = await mkdtemp(join(tmpdir(), "hydra-router-test-"));
+  const routesPath = join(tempDir, "routes.json");
+  await writeFile(
+    routesPath,
+    JSON.stringify({
+      "lmstudio/tool-model": {
+        provider: "lmstudio",
+        upstreamModel: "tool-model",
+        capabilities: { tools: true },
+      },
+    }),
+  );
+
+  const bridgeCalls = [];
+  const appServerBridge = {
+    async getTools() {
+      return [
+        {
+          type: "function",
+          function: {
+            name: "gmail_search_emails",
+            description: "Search Gmail",
+            parameters: { type: "object", properties: { query: { type: "string" } } },
+          },
+          _hydraAppTool: { server: "codex_apps" },
+        },
+      ];
+    },
+    async callTool(call) {
+      bridgeCalls.push(call);
+      return JSON.stringify({ messages: [{ subject: "Latest email" }] });
+    },
+  };
+  const fetchCalls = [];
+  const originalFetch = globalThis.fetch;
+  let hydra;
+  globalThis.fetch = async (_url, options) => {
+    fetchCalls.push(JSON.parse(options.body));
+    const responseBody = fetchCalls.length === 1
+      ? 'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_search_1","function":{"name":"tool_search","arguments":"{\\"query\\":\\"gmail search emails\\"}"}}]}}]}\n\n' +
+        "data: [DONE]\n\n"
+      : fetchCalls.length === 2
+        ? 'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_lm_1","function":{"name":"gmail_search_emails","arguments":"{\\"query\\":\\"newer_than:1d\\"}"}}]}}]}\n\n' +
+          "data: [DONE]\n\n"
+        : 'data: {"choices":[{"delta":{"content":"Latest email"}}]}\n\n' +
+          "data: [DONE]\n\n";
+    return new Response(responseBody, { status: 200, headers: { "content-type": "text/event-stream" } });
+  };
+
+  try {
+    const handler = createHydraHandler({
+      paths: { routesPath },
+      ollamaBaseUrl: "http://127.0.0.1:11434",
+      lmStudioBaseUrl: "http://127.0.0.1:11239",
+      openaiBaseUrl: "https://chatgpt.com/backend-api/codex",
+      appServerBridge,
+    });
+    hydra = createHttpServer(handler);
+    hydra.listen(0, "127.0.0.1");
+    await once(hydra, "listening");
+
+    const response = await originalFetch(`http://127.0.0.1:${hydra.address().port}/responses`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "lmstudio/tool-model", input: "latest emails", stream: true }),
+    });
+    const text = await response.text();
+
+    assert.equal(response.status, 200);
+    assert.match(text, /Latest email/);
+    assert.equal(fetchCalls.length, 3);
+    assert.equal(fetchCalls[0].tools.some((tool) => tool.function.name === "tool_search"), true);
+    assert.equal(fetchCalls[0].tools.some((tool) => tool.function.name === "gmail_search_emails"), false);
+    assert.equal(fetchCalls[1].tools.some((tool) => tool.function.name === "gmail_search_emails"), true);
+    assert.equal(fetchCalls[2].messages.at(-2).tool_calls[0].id, "call_lm_1");
+    assert.equal(fetchCalls[2].messages.at(-1).tool_call_id, "call_lm_1");
+    assert.equal(bridgeCalls[0].name, "gmail_search_emails");
+    assert.equal(bridgeCalls[0].argumentsText, '{"query":"newer_than:1d"}');
+  } finally {
+    if (hydra?.listening) {
+      hydra.close();
+      await Promise.allSettled([once(hydra, "close")]);
+    }
+    globalThis.fetch = originalFetch;
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("returns LM Studio custom-tool calls in the Responses custom call shape", async () => {
+  const tempDir = await mkdtemp(join(tmpdir(), "hydra-router-test-"));
+  const routesPath = join(tempDir, "routes.json");
+  await writeFile(
+    routesPath,
+    JSON.stringify({
+      "lmstudio/tool-model": {
+        provider: "lmstudio",
+        upstreamModel: "tool-model",
+        capabilities: { tools: true },
+      },
+    }),
+  );
+
+  const originalFetch = globalThis.fetch;
+  let upstreamRequest;
+  let hydra;
+  globalThis.fetch = async (_url, options) => {
+    upstreamRequest = JSON.parse(options.body);
+    return new Response(
+      'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"apply_patch","arguments":"{\\"input\\":\\"*** Begin Patch\\n*** End Patch\\"}"}}]}}]}\n\n' +
+        "data: [DONE]\n\n",
+      { status: 200, headers: { "content-type": "text/event-stream" } },
+    );
+  };
+
+  try {
+    const handler = createHydraHandler({
+      paths: { routesPath },
+      ollamaBaseUrl: "http://127.0.0.1:11434",
+      lmStudioBaseUrl: "http://127.0.0.1:11239",
+      openaiBaseUrl: "https://chatgpt.com/backend-api/codex",
+    });
+    hydra = createHttpServer(handler);
+    hydra.listen(0, "127.0.0.1");
+    await once(hydra, "listening");
+
+    const response = await originalFetch(`http://127.0.0.1:${hydra.address().port}/responses`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "lmstudio/tool-model",
+        input: "patch it",
+        stream: true,
+        tools: [{ type: "custom", name: "apply_patch", description: "Apply a patch" }],
+      }),
+    });
+    const text = await response.text();
+
+    assert.equal(response.status, 200);
+    assert.equal(upstreamRequest.tools[0].function.name, "apply_patch");
+    assert.equal(upstreamRequest.tools[0].function.parameters.required[0], "input");
+    assert.match(text, /response\.custom_tool_call_input\.done/);
+    assert.match(text, /"type":"custom_tool_call"/);
+    assert.match(text, /\*\*\* Begin Patch/);
+    assert.doesNotMatch(text, /"type":"function_call"/);
+  } finally {
+    if (hydra?.listening) {
+      hydra.close();
+      await Promise.allSettled([once(hydra, "close")]);
+    }
+    globalThis.fetch = originalFetch;
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("emulates hosted web search inside non-streaming LM Studio turns", async () => {
+  const tempDir = await mkdtemp(join(tmpdir(), "hydra-router-test-"));
+  const routesPath = join(tempDir, "routes.json");
+  await writeFile(
+    routesPath,
+    JSON.stringify({
+      "lmstudio/tool-model": {
+        provider: "lmstudio",
+        upstreamModel: "tool-model",
+        capabilities: { tools: true },
+      },
+    }),
+  );
+
+  const originalCommand = process.env.HYDRA_WEB_SEARCH_COMMAND;
+  process.env.HYDRA_WEB_SEARCH_COMMAND = "/bin/echo HYDRA_SEARCH_RESULT";
+  const originalFetch = globalThis.fetch;
+  const fetchCalls = [];
+  let hydra;
+  globalThis.fetch = async (_url, options) => {
+    fetchCalls.push(JSON.parse(options.body));
+    const responseBody = fetchCalls.length === 1
+      ? {
+          choices: [{
+            message: {
+              tool_calls: [{
+                id: "call_search_1",
+                type: "function",
+                function: { name: "web_search", arguments: '{"query":"hydra router"}' },
+              }],
+            },
+          }],
+        }
+      : { choices: [{ message: { content: "Search complete" } }] };
+    return new Response(JSON.stringify(responseBody), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  };
+
+  try {
+    const handler = createHydraHandler({
+      paths: { routesPath },
+      ollamaBaseUrl: "http://127.0.0.1:11434",
+      lmStudioBaseUrl: "http://127.0.0.1:11239",
+      openaiBaseUrl: "https://chatgpt.com/backend-api/codex",
+    });
+    hydra = createHttpServer(handler);
+    hydra.listen(0, "127.0.0.1");
+    await once(hydra, "listening");
+
+    const response = await originalFetch(`http://127.0.0.1:${hydra.address().port}/responses`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "lmstudio/tool-model",
+        input: "search",
+        stream: false,
+        tools: [{ type: "web_search" }],
+      }),
+    });
+    const json = await response.json();
+
+    assert.equal(response.status, 200);
+    assert.equal(fetchCalls.length, 2);
+    assert.equal(fetchCalls[0].tools.some((tool) => tool.function.name === "web_search"), true);
+    assert.match(fetchCalls[1].messages.at(-1).content, /HYDRA_SEARCH_RESULT hydra router/);
+    assert.equal(json.output[0].content[0].text, "Search complete");
+  } finally {
+    if (hydra?.listening) {
+      hydra.close();
+      await Promise.allSettled([once(hydra, "close")]);
+    }
+    globalThis.fetch = originalFetch;
+    restoreEnv("HYDRA_WEB_SEARCH_COMMAND", originalCommand);
     await rm(tempDir, { recursive: true, force: true });
   }
 });

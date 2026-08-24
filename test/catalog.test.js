@@ -244,6 +244,7 @@ test("adds models advertised by LM Studio", async () => {
     ollamaBaseUrl: "http://127.0.0.1:11434",
     lmStudioBaseUrl: "http://127.0.0.1:11239",
     fetchImpl,
+    webSearchReady: true,
   });
 
   assert.deepEqual(
@@ -254,6 +255,7 @@ test("adds models advertised by LM Studio", async () => {
   assert.equal(result.catalog.models[1].context_window, 65536);
   assert.deepEqual(result.catalog.models[1].input_modalities, ["text", "image"]);
   assert.equal(result.catalog.models[1].default_reasoning_level, "medium");
+  assert.equal(result.catalog.models[1].supports_search_tool, true);
   assert.deepEqual(result.catalog.models[1].supported_reasoning_levels, [
     { effort: "low", description: "Disable LM Studio reasoning for this chat." },
     { effort: "medium", description: "Use LM Studio reasoning when supported by the local model." },
@@ -262,7 +264,7 @@ test("adds models advertised by LM Studio", async () => {
   assert.deepEqual(result.routes["lmstudio/qwen3-4b"], {
     provider: "lmstudio",
     upstreamModel: "qwen3-4b",
-    capabilities: { thinking: true, tools: true, vision: true, webSearch: false },
+    capabilities: { thinking: true, tools: true, vision: true, webSearch: true },
   });
 });
 

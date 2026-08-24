@@ -145,9 +145,9 @@ export function localModelFromTemplate(template, ollamaModel, priority, { modelI
   return model;
 }
 
-export function lmStudioModelFromTemplate(template, lmStudioModel, priority) {
+export function lmStudioModelFromTemplate(template, lmStudioModel, priority, { webSearchReady = false } = {}) {
   const name = lmStudioModel.id;
-  const capabilities = lmStudioRouteCapabilities(lmStudioModel);
+  const capabilities = lmStudioRouteCapabilities(lmStudioModel, webSearchReady);
   const reasoningLevels = lmStudioReasoningLevels(lmStudioModel);
   const model = cloneWithoutNux(template);
   model.slug = normalizeLMStudioSlug(name);
@@ -163,7 +163,7 @@ export function lmStudioModelFromTemplate(template, lmStudioModel, priority) {
   model.supports_reasoning_summaries = true;
   model.support_verbosity = false;
   model.default_verbosity = "low";
-  model.supports_search_tool = false;
+  model.supports_search_tool = capabilities.webSearch;
   model.input_modalities = capabilities.vision ? ["text", "image"] : ["text"];
   model.web_search_tool_type = "text";
   model.use_responses_lite = false;
@@ -212,13 +212,14 @@ export async function fetchLMStudioModels({ lmStudioBaseUrl, fetchImpl }) {
   return Array.isArray(body.data) ? body.data.filter((model) => typeof model?.id === "string" && model.id) : [];
 }
 
-function lmStudioRouteCapabilities(model) {
+function lmStudioRouteCapabilities(model, webSearchReady = false) {
   const advertised = model.capabilities;
+  const tools = advertised ? Boolean(advertised.trained_for_tool_use) : true;
   return {
     thinking: Boolean(advertised?.reasoning),
-    tools: advertised ? Boolean(advertised.trained_for_tool_use) : true,
+    tools,
     vision: Boolean(advertised?.vision),
-    webSearch: false,
+    webSearch: tools && Boolean(webSearchReady),
   };
 }
 
@@ -270,7 +271,7 @@ export async function buildCatalog({
     }),
   );
   const lmStudioCatalogModels = lmStudioModels.map((model, index) =>
-    lmStudioModelFromTemplate(template, model, 2000 + index),
+    lmStudioModelFromTemplate(template, model, 2000 + index, { webSearchReady }),
   );
   const routes = {};
   for (const model of cloudModels) routes[model.slug] = { provider: "openai", upstreamModel: model.slug };
@@ -287,7 +288,7 @@ export async function buildCatalog({
     routes[normalizeLMStudioSlug(model.id)] = {
       provider: "lmstudio",
       upstreamModel: model.id,
-      capabilities: lmStudioRouteCapabilities(model),
+      capabilities: lmStudioRouteCapabilities(model, webSearchReady),
     };
   }
 

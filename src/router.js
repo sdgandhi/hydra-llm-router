@@ -133,6 +133,28 @@ export function normalizeResponsesInput(input, { allowImages = false } = {}) {
   if (!Array.isArray(input)) return [{ role: "user", content: JSON.stringify(input ?? "") }];
 
   return input.map((item) => {
+    if (item?.type === "function_call" || item?.type === "custom_tool_call") {
+      const argumentsText = item.type === "custom_tool_call"
+        ? JSON.stringify({ input: item.input ?? "" })
+        : item.arguments ?? "{}";
+      return {
+        role: "assistant",
+        content: "",
+        tool_calls: [
+          {
+            id: item.call_id,
+            function: { name: item.name, arguments: parseToolArguments(argumentsText) },
+          },
+        ],
+      };
+    }
+    if (item?.type === "function_call_output" || item?.type === "custom_tool_call_output") {
+      return {
+        role: "tool",
+        tool_call_id: item.call_id,
+        content: typeof item.output === "string" ? item.output : JSON.stringify(item.output ?? ""),
+      };
+    }
     const role = item.role ?? "user";
     if (!Array.isArray(item.content)) return { role, content: String(item.content ?? "") };
 
@@ -161,7 +183,10 @@ export function normalizeLMStudioInput(input, { allowImages = false } = {}) {
   if (!Array.isArray(input)) return [{ role: "user", content: JSON.stringify(input ?? "") }];
 
   return input.map((item) => {
-    if (item?.type === "function_call") {
+    if (item?.type === "function_call" || item?.type === "custom_tool_call") {
+      const argumentsText = item.type === "custom_tool_call"
+        ? JSON.stringify({ input: item.input ?? "" })
+        : item.arguments ?? "{}";
       return {
         role: "assistant",
         content: "",
@@ -169,12 +194,12 @@ export function normalizeLMStudioInput(input, { allowImages = false } = {}) {
           {
             id: item.call_id,
             type: "function",
-            function: { name: item.name, arguments: item.arguments ?? "{}" },
+            function: { name: item.name, arguments: argumentsText },
           },
         ],
       };
     }
-    if (item?.type === "function_call_output") {
+    if (item?.type === "function_call_output" || item?.type === "custom_tool_call_output") {
       return {
         role: "tool",
         tool_call_id: item.call_id,
@@ -212,10 +237,94 @@ function requestedNoTools(body) {
   return body?.tool_choice === "none" || body?.tool_choice?.type === "none";
 }
 
-export function buildOllamaChatBody({ body, route, stream, messages = null, appTools = [] }) {
+const LOCAL_CONTROL_MARKERS = ["analysis", "commentary", "final", "thought"]
+  .flatMap((channel) => [
+    `<|channel>${channel}\r\n<channel|>`,
+    `<|channel>${channel}\n<channel|>`,
+    `<|channel>${channel}<channel|>`,
+    `<|channel|>${channel}<|message|>`,
+    `<|channel>${channel}<|message|>`,
+  ])
+  .concat(["<|channel|>", "<|channel>", "<channel|>", "<|message|>"])
+  .sort((left, right) => right.length - left.length);
+
+export function createLocalControlMarkerFilter() {
+  let pending = "";
+
+  const drain = (final) => {
+    let output = "";
+    while (pending) {
+      const marker = LOCAL_CONTROL_MARKERS.find((candidate) => pending.startsWith(candidate));
+      if (marker) {
+        if (!final && LOCAL_CONTROL_MARKERS.some(
+          (candidate) => candidate.length > pending.length && candidate.startsWith(pending),
+        )) break;
+        pending = pending.slice(marker.length);
+        continue;
+      }
+      if (!final && LOCAL_CONTROL_MARKERS.some((candidate) => candidate.startsWith(pending))) break;
+      output += pending[0];
+      pending = pending.slice(1);
+    }
+    return output;
+  };
+
+  return {
+    push(text) {
+      pending += String(text ?? "");
+      return drain(false);
+    },
+    finish() {
+      return drain(true);
+    },
+  };
+}
+
+export function stripLocalControlMarkers(text) {
+  const filter = createLocalControlMarkerFilter();
+  return filter.push(text) + filter.finish();
+}
+
+function currentCollaborationMode(body) {
+  const texts = [];
+  if (typeof body?.instructions === "string") texts.push(body.instructions);
+  for (const item of Array.isArray(body?.input) ? body.input : []) {
+    if (typeof item?.content === "string") texts.push(item.content);
+    for (const part of Array.isArray(item?.content) ? item.content : []) {
+      const text = part?.text ?? part?.input_text ?? part?.output_text;
+      if (typeof text === "string") texts.push(text);
+    }
+  }
+
+  let mode;
+  const pattern = /<collaboration_mode>\s*# Collaboration Mode:\s*(Default|Plan)\b/gi;
+  for (const text of texts) {
+    for (const match of text.matchAll(pattern)) mode = match[1].toLowerCase();
+  }
+  return mode;
+}
+
+function localModelTools(body) {
+  if (!Array.isArray(body?.tools)) return [];
+  // Codex only has an executor for request_user_input while Plan mode is active.
+  // Some harness clients omit the collaboration-mode block entirely, so treat
+  // Plan as the opt-in case instead of assuming an unknown mode is safe.
+  if (currentCollaborationMode(body) === "plan") return body.tools;
+  return body.tools.filter((tool) => (tool?.function?.name ?? tool?.name) !== "request_user_input");
+}
+
+function lmStudioTools(body) {
+  return localModelTools(body).filter((tool) => (
+    tool?.type !== "web_search"
+    && tool?.type !== "web_search_preview"
+    && tool?.type !== "tool_search"
+  ));
+}
+
+export function buildOllamaChatBody({ body, route, stream, messages = null, tools = null, appTools = [] }) {
   const capabilities = route.capabilities ?? {};
   const normalizedMessages = messages ?? normalizeResponsesInput(body.input, { allowImages: Boolean(capabilities.vision) });
-  const tools = mergeOllamaTools(normalizeOllamaTools(body.tools), appTools);
+  const normalizedTools = tools ?? mergeOllamaTools(normalizeOllamaTools(localModelTools(body)), appTools);
   const ollamaBody = {
     model: route.upstreamModel,
     messages: normalizedMessages,
@@ -226,19 +335,19 @@ export function buildOllamaChatBody({ body, route, stream, messages = null, appT
       num_predict: body.max_output_tokens,
     },
   };
-  if (tools.length && capabilities.tools !== false) ollamaBody.tools = tools;
+  if (normalizedTools.length && capabilities.tools !== false && !requestedNoTools(body)) ollamaBody.tools = normalizedTools;
   if (capabilities.thinking && requestedThinking(body)) ollamaBody.think = true;
   return ollamaBody;
 }
 
-export function buildLMStudioChatBody({ body, route, stream }) {
+export function buildLMStudioChatBody({ body, route, stream, messages = null, tools = null }) {
   const capabilities = route.capabilities ?? {};
-  const tools = normalizeOllamaTools(body.tools);
-  const messages = normalizeLMStudioInput(body.input, { allowImages: Boolean(capabilities.vision) });
-  if (body.instructions) messages.unshift({ role: "system", content: String(body.instructions) });
+  const normalizedTools = tools ?? normalizeOllamaTools(lmStudioTools(body));
+  const normalizedMessages = messages ?? normalizeLMStudioInput(body.input, { allowImages: Boolean(capabilities.vision) });
+  if (messages == null && body.instructions) normalizedMessages.unshift({ role: "system", content: String(body.instructions) });
   const lmStudioBody = {
     model: route.upstreamModel,
-    messages,
+    messages: normalizedMessages,
     stream,
     temperature: body.temperature,
     top_p: body.top_p,
@@ -252,8 +361,8 @@ export function buildLMStudioChatBody({ body, route, stream }) {
     lmStudioBody.chat_template_kwargs = { enable_thinking: true };
     lmStudioBody.reasoning_effort = reasoningEffort;
   }
-  if (tools.length && capabilities.tools !== false && !requestedNoTools(body)) {
-    lmStudioBody.tools = tools;
+  if (normalizedTools.length && capabilities.tools !== false && !requestedNoTools(body)) {
+    lmStudioBody.tools = normalizedTools;
     if (body.tool_choice != null) {
       lmStudioBody.tool_choice =
         body.tool_choice?.type === "function" && body.tool_choice.name
@@ -349,6 +458,28 @@ function functionCallItem({ id, index, status = "completed", name, argumentsText
   };
 }
 
+function customToolInput(argumentsText) {
+  const parsed = parseToolArguments(argumentsText);
+  return typeof parsed?.input === "string" ? parsed.input : String(argumentsText ?? "");
+}
+
+function customToolCallItem({ id, index, status = "completed", name, argumentsText = "" }) {
+  return {
+    id: `${id}_ctc_${index}`,
+    type: "custom_tool_call",
+    status,
+    call_id: `call_${id}_${index}`,
+    name,
+    input: customToolInput(argumentsText),
+  };
+}
+
+function responseToolCallItem({ id, index, responseToolType = "function", ...toolCall }) {
+  return responseToolType === "custom"
+    ? customToolCallItem({ id, index, ...toolCall })
+    : functionCallItem({ id, index, ...toolCall });
+}
+
 function reasoningItem({ id, status = "in_progress", text }) {
   const item = {
     id: `${id}_rs`,
@@ -364,8 +495,27 @@ export function normalizeOllamaTools(tools) {
   if (!Array.isArray(tools)) return [];
   const normalized = [];
   const names = new Set();
+  const queue = [...tools];
 
-  for (const tool of tools) {
+  while (queue.length) {
+    const tool = queue.shift();
+    if (tool?.type === "namespace") {
+      const nested = Array.isArray(tool.tools)
+        ? tool.tools
+        : Array.isArray(tool.functions)
+          ? tool.functions
+          : tool.tools && typeof tool.tools === "object"
+            ? Object.values(tool.tools)
+            : tool.functions && typeof tool.functions === "object"
+              ? Object.values(tool.functions)
+              : [];
+      queue.unshift(
+        ...nested.map((candidate) => (
+          candidate?.type ? candidate : { ...candidate, type: "function" }
+        )),
+      );
+      continue;
+    }
     let candidate = null;
     if (tool?.type === "function") {
       const source = tool.function ?? tool;
@@ -377,6 +527,22 @@ export function normalizeOllamaTools(tools) {
           description: source.description ?? "",
           parameters: source.parameters ?? { type: "object", properties: {} },
         },
+      };
+    } else if (tool?.type === "custom" && tool.name) {
+      candidate = {
+        type: "function",
+        function: {
+          name: tool.name,
+          description: tool.description ?? "",
+          parameters: {
+            type: "object",
+            properties: {
+              input: { type: "string", description: "Free-form input for this tool." },
+            },
+            required: ["input"],
+          },
+        },
+        _hydraResponseTool: { type: "custom" },
       };
     } else if (tool?.type === "web_search" || tool?.type === "web_search_preview") {
       candidate = {
@@ -427,10 +593,12 @@ function normalizeOllamaToolCalls(toolCalls) {
       const source = toolCall.function ?? toolCall;
       if (!source?.name) return null;
       const args = source.arguments ?? {};
-      return {
+      const normalized = {
         name: source.name,
         argumentsText: typeof args === "string" ? args : JSON.stringify(args),
       };
+      if (toolCall.id) normalized.callId = toolCall.id;
+      return normalized;
     })
     .filter(Boolean);
 }
@@ -459,18 +627,22 @@ function scoreToolMatch(tool, terms) {
   return terms.reduce((score, term) => score + (haystack.includes(term) ? 1 : 0), 0);
 }
 
-function emulateToolSearch({ tools, query, limit = 8 }) {
+function matchingToolsForSearch({ tools, query, limit = 8 }) {
   const terms = String(query ?? "")
     .toLowerCase()
     .split(/\s+/)
     .filter(Boolean);
   const summaries = (Array.isArray(tools) ? tools : []).map(summarizeToolForSearch);
-  const matches = summaries
+  return summaries
     .map((tool) => ({ tool, score: terms.length ? scoreToolMatch(tool, terms) : 1 }))
     .filter((entry) => entry.score > 0)
     .sort((a, b) => b.score - a.score || a.tool.name.localeCompare(b.tool.name))
     .slice(0, Math.max(1, Math.min(Number(limit) || 8, 20)))
     .map((entry) => entry.tool);
+}
+
+function emulateToolSearch({ tools, query, limit = 8 }) {
+  const matches = matchingToolsForSearch({ tools, query, limit });
   return JSON.stringify({ query, tools: matches }, null, 2);
 }
 
@@ -518,6 +690,98 @@ function toolSourcesForSearch({ requestTools, appTools }) {
   ];
 }
 
+async function createLocalToolBroker({ req, body, appServerBridge, debugAuth }) {
+  if (requestedNoTools(body)) {
+    return {
+      modelTools: [],
+      appToolCount: 0,
+      isHandled: () => false,
+      isEmulated: () => false,
+      isAppTool: () => false,
+      externalize: (toolCall) => ({ ...toolCall, responseToolType: "function" }),
+      async execute() {
+        throw new Error("Tools are disabled for this request.");
+      },
+    };
+  }
+
+  let appTools = [];
+  try {
+    appTools = appServerBridge ? await appServerBridge.getTools() : [];
+  } catch (error) {
+    debugLogError({ enabled: debugAuth, req, error, stage: "app_tools_discovery" });
+  }
+
+  const statuses = await emulatedToolStatuses();
+  const readyEmulatedNames = new Set(
+    statuses.filter((status) => status.status === "ready").map((status) => status.name),
+  );
+  const requestTools = normalizeOllamaTools(localModelTools(body)).filter((tool) => {
+    const name = tool.function?.name;
+    return !EMULATED_TOOL_NAMES.has(name) || readyEmulatedNames.has(name);
+  });
+  const deferredToolSearch = appTools.length && readyEmulatedNames.has("tool_search")
+    ? normalizeOllamaTools([{ type: "tool_search" }])
+    : [];
+  const modelTools = mergeOllamaTools(requestTools, deferredToolSearch);
+  const responseToolTypes = new Map(
+    modelTools
+      .filter((tool) => tool._hydraResponseTool?.type)
+      .map((tool) => [tool.function?.name, tool._hydraResponseTool.type]),
+  );
+  const requestToolNames = new Set(requestTools.map((tool) => tool.function?.name).filter(Boolean));
+  const appToolNames = new Set(
+    appTools
+      .map((tool) => tool.function?.name)
+      .filter((name) => name && !requestToolNames.has(name)),
+  );
+  const searchableTools = toolSourcesForSearch({ requestTools: body.tools, appTools });
+  const isEmulated = (toolCall) => readyEmulatedNames.has(toolCall.name);
+  const isAppTool = (toolCall) => appToolNames.has(toolCall.name);
+
+  return {
+    modelTools,
+    appToolCount: appTools.length,
+    isHandled(toolCall) {
+      return isEmulated(toolCall) || isAppTool(toolCall);
+    },
+    isEmulated,
+    isAppTool,
+    externalize(toolCall) {
+      return { ...toolCall, responseToolType: responseToolTypes.get(toolCall.name) ?? "function" };
+    },
+    async execute(toolCall) {
+      try {
+        let content;
+        if (toolCall.name === "tool_search" && isEmulated(toolCall)) {
+          const args = parseToolArguments(toolCall.argumentsText);
+          const matches = matchingToolsForSearch({
+            tools: searchableTools,
+            query: args.query ?? args.q ?? "",
+            limit: args.limit,
+          });
+          const matchedNames = new Set(matches.map((tool) => tool.name));
+          const discoveredAppTools = appTools.filter((tool) => matchedNames.has(tool.function?.name));
+          modelTools.splice(0, modelTools.length, ...mergeOllamaTools(modelTools, discoveredAppTools));
+          content = JSON.stringify({ query: args.query ?? args.q ?? "", tools: matches }, null, 2);
+        } else {
+          content = isEmulated(toolCall)
+            ? await executeEmulatedTool({
+                name: toolCall.name,
+                argumentsText: toolCall.argumentsText,
+                requestTools: searchableTools,
+              })
+            : await appServerBridge.callTool(toolCall);
+        }
+        return String(content ?? "").slice(0, MAX_TOOL_RESULT_CHARS);
+      } catch (error) {
+        debugLogError({ enabled: debugAuth, req, error, stage: `local_tool_${toolCall.name}` });
+        return `Tool ${toolCall.name} failed: ${error.message}`.slice(0, MAX_TOOL_RESULT_CHARS);
+      }
+    },
+  };
+}
+
 function writeResponseStreamStart(res, { id, model }) {
   writeSse(res, "response.created", { type: "response.created", response: responseEnvelope({ id, model }) });
   writeSse(res, "response.in_progress", {
@@ -551,6 +815,39 @@ function writeFunctionCall(res, { id, outputIndex, callIndex, name, argumentsTex
     output_index: outputIndex,
     item: doneItem,
   });
+}
+
+function writeCustomToolCall(res, { id, outputIndex, callIndex, name, argumentsText }) {
+  const input = customToolInput(argumentsText);
+  const addedItem = customToolCallItem({ id, index: callIndex, status: "in_progress", name, argumentsText: "" });
+  const doneItem = customToolCallItem({ id, index: callIndex, status: "completed", name, argumentsText });
+  writeSse(res, "response.output_item.added", {
+    type: "response.output_item.added",
+    output_index: outputIndex,
+    item: addedItem,
+  });
+  writeSse(res, "response.custom_tool_call_input.delta", {
+    type: "response.custom_tool_call_input.delta",
+    item_id: addedItem.id,
+    output_index: outputIndex,
+    delta: input,
+  });
+  writeSse(res, "response.custom_tool_call_input.done", {
+    type: "response.custom_tool_call_input.done",
+    item_id: addedItem.id,
+    output_index: outputIndex,
+    input,
+  });
+  writeSse(res, "response.output_item.done", {
+    type: "response.output_item.done",
+    output_index: outputIndex,
+    item: doneItem,
+  });
+}
+
+function writeResponseToolCall(res, { responseToolType = "function", ...toolCall }) {
+  if (responseToolType === "custom") writeCustomToolCall(res, toolCall);
+  else writeFunctionCall(res, toolCall);
 }
 
 function writeReasoningStart(res, { id, outputIndex }) {
@@ -652,28 +949,12 @@ async function callOllama({ req, body, route, ollamaBaseUrl, res, debugAuth, app
   const stream = body.stream !== false;
   const id = responseId();
   const url = new URL("/api/chat", ollamaBaseUrl);
-  let appTools = [];
-  if (!requestedNoTools(body)) {
-    try {
-      appTools = appServerBridge ? await appServerBridge.getTools() : [];
-    } catch (error) {
-      debugLogError({ enabled: debugAuth, req, error, stage: "app_tools_discovery" });
-    }
-  }
-  const appToolNames = new Set(appTools.map((tool) => tool.function?.name).filter(Boolean));
-  const searchableTools = toolSourcesForSearch({ requestTools: body.tools, appTools });
-  const isHandledToolCall = (toolCall) => EMULATED_TOOL_NAMES.has(toolCall.name) || appToolNames.has(toolCall.name);
+  const toolBroker = await createLocalToolBroker({ req, body, appServerBridge, debugAuth });
+  const isHandledToolCall = (toolCall) => toolBroker.isHandled(toolCall);
   const executeHandledToolCall = async (toolCall) => {
-    const content = EMULATED_TOOL_NAMES.has(toolCall.name)
-      ? await executeEmulatedTool({
-          name: toolCall.name,
-          argumentsText: toolCall.argumentsText,
-          requestTools: searchableTools,
-        })
-      : await appServerBridge.callTool(toolCall);
     return {
       role: "tool",
-      content: content.slice(0, MAX_TOOL_RESULT_CHARS),
+      content: await toolBroker.execute(toolCall),
     };
   };
   const appendHandledToolRound = async ({ turnContent, handledCalls }) => {
@@ -701,7 +982,7 @@ async function callOllama({ req, body, route, ollamaBaseUrl, res, debugAuth, app
   }
 
   async function fetchOllama({ stream }) {
-    const ollamaBody = buildOllamaChatBody({ body, route, stream, messages, appTools });
+    const ollamaBody = buildOllamaChatBody({ body, route, stream, messages, tools: toolBroker.modelTools });
 
     debugLogUpstream({
       enabled: debugAuth,
@@ -713,7 +994,7 @@ async function callOllama({ req, body, route, ollamaBaseUrl, res, debugAuth, app
         requestBytes: Buffer.byteLength(JSON.stringify(ollamaBody)),
         stream,
         toolCount: Array.isArray(ollamaBody.tools) ? ollamaBody.tools.length : 0,
-        appToolCount: appTools.length,
+        appToolCount: toolBroker.appToolCount,
         images: ollamaBody.messages.reduce((count, message) => count + (message.images?.length ?? 0), 0),
         think: Boolean(ollamaBody.think),
       },
@@ -769,8 +1050,8 @@ async function callOllama({ req, body, route, ollamaBaseUrl, res, debugAuth, app
   if (!stream) {
     for (let rounds = 0; rounds < MAX_EMULATED_TOOL_ROUNDS; rounds += 1) {
       const data = await response.json();
-      const thinking = data.message?.thinking ?? "";
-      const content = data.message?.content ?? "";
+      const thinking = stripLocalControlMarkers(data.message?.thinking ?? "");
+      const content = stripLocalControlMarkers(data.message?.content ?? "");
       const toolCalls = normalizeOllamaToolCalls(data.message?.tool_calls);
       const handledCalls = toolCalls.filter(isHandledToolCall);
       const externalCalls = toolCalls.filter((toolCall) => !isHandledToolCall(toolCall));
@@ -783,8 +1064,8 @@ async function callOllama({ req, body, route, ollamaBaseUrl, res, debugAuth, app
       const output = [];
       if (thinking) output.push(reasoningItem({ id, status: "completed", text: thinking }));
       if (content || !toolCalls.length) output.push(messageItem({ id, status: "completed", text: content }));
-      toolCalls.forEach((toolCall, index) => {
-        output.push(functionCallItem({ id, index, ...toolCall }));
+      externalCalls.forEach((toolCall, index) => {
+        output.push(responseToolCallItem({ id, index, ...toolBroker.externalize(toolCall) }));
       });
       jsonResponse(
         req,
@@ -844,11 +1125,46 @@ async function callOllama({ req, body, route, ollamaBaseUrl, res, debugAuth, app
   let doneReason;
   let rounds = 0;
   let completedResponse = false;
+  const thinkingFilter = createLocalControlMarkerFilter();
+
+  const emitThinkingDelta = (delta) => {
+    if (!delta) return;
+    if (!emittedThinking) writeReasoningStart(res, { id, outputIndex: 0 });
+    writeReasoningDelta(res, { id, outputIndex: 0, delta });
+    fullText += delta;
+    thinkingDeltas += 1;
+    thinkingChars += delta.length;
+    emittedThinking = true;
+  };
+
+  const flushThinking = () => emitThinkingDelta(thinkingFilter.finish());
+
+  const emitContentDelta = (delta) => {
+    if (!delta) return;
+    flushThinking();
+    if (emittedThinking && !completedThinking) {
+      writeReasoningDone(res, { id, outputIndex: 0, text: fullText });
+      completedThinking = true;
+    }
+    if (!emittedContent) writeMessageStart(res, { id, outputIndex: emittedThinking ? 1 : 0 });
+    writeSse(res, "response.output_text.delta", {
+      type: "response.output_text.delta",
+      item_id: `${id}_msg`,
+      output_index: emittedThinking ? 1 : 0,
+      content_index: 0,
+      delta,
+    });
+    fullText += delta;
+    contentDeltas += 1;
+    contentChars += delta.length;
+    emittedContent = true;
+  };
 
   while (rounds < MAX_EMULATED_TOOL_ROUNDS) {
     rounds += 1;
     const turnToolCalls = [];
     let turnContent = "";
+    const contentFilter = createLocalControlMarkerFilter();
     buffer = "";
 
     for await (const chunk of response.body) {
@@ -859,48 +1175,31 @@ async function callOllama({ req, body, route, ollamaBaseUrl, res, debugAuth, app
       for (const line of lines) {
         if (!line.trim()) continue;
         const event = JSON.parse(line);
-        const thinking = event.message?.thinking ?? "";
-        const content = event.message?.content ?? "";
+        const thinking = thinkingFilter.push(event.message?.thinking ?? "");
+        const content = contentFilter.push(event.message?.content ?? "");
         turnToolCalls.push(...normalizeOllamaToolCalls(event.message?.tool_calls));
-        if (thinking) {
-          if (!emittedThinking) writeReasoningStart(res, { id, outputIndex: 0 });
-          writeReasoningDelta(res, { id, outputIndex: 0, delta: thinking });
-          fullText += thinking;
-          thinkingDeltas += 1;
-          thinkingChars += thinking.length;
-          emittedThinking = true;
-        }
+        emitThinkingDelta(thinking);
         if (content) {
-          if (emittedThinking && !completedThinking) {
-            writeReasoningDone(res, { id, outputIndex: 0, text: fullText });
-            completedThinking = true;
-          }
-          if (!emittedContent) writeMessageStart(res, { id, outputIndex: emittedThinking ? 1 : 0 });
-          writeSse(res, "response.output_text.delta", {
-            type: "response.output_text.delta",
-            item_id: `${id}_msg`,
-            output_index: emittedThinking ? 1 : 0,
-            content_index: 0,
-            delta: content,
-          });
-          fullText += content;
+          emitContentDelta(content);
           turnContent += content;
-          contentDeltas += 1;
-          contentChars += content.length;
-          emittedContent = true;
         }
         if (event.done) {
           doneReason = event.done_reason;
         }
       }
     }
+    const contentTail = contentFilter.finish();
+    if (contentTail) {
+      emitContentDelta(contentTail);
+      turnContent += contentTail;
+    }
 
     totalToolCalls += turnToolCalls.length;
-    const handledCalls = turnToolCalls.filter((toolCall) => EMULATED_TOOL_NAMES.has(toolCall.name) || appToolNames.has(toolCall.name));
-    const externalCalls = turnToolCalls.filter((toolCall) => !EMULATED_TOOL_NAMES.has(toolCall.name) && !appToolNames.has(toolCall.name));
+    const handledCalls = turnToolCalls.filter((toolCall) => toolBroker.isHandled(toolCall));
+    const externalCalls = turnToolCalls.filter((toolCall) => !toolBroker.isHandled(toolCall));
     if (handledCalls.length && !externalCalls.length) {
-      const emulatedCalls = handledCalls.filter((toolCall) => EMULATED_TOOL_NAMES.has(toolCall.name));
-      const appCalls = handledCalls.filter((toolCall) => appToolNames.has(toolCall.name));
+      const emulatedCalls = handledCalls.filter((toolCall) => toolBroker.isEmulated(toolCall));
+      const appCalls = handledCalls.filter((toolCall) => toolBroker.isAppTool(toolCall));
       emulatedToolCalls += emulatedCalls.length;
       appToolCalls += appCalls.length;
       messages.push({
@@ -916,19 +1215,7 @@ async function callOllama({ req, body, route, ollamaBaseUrl, res, debugAuth, app
       messages.push(
         ...(
           await Promise.all(
-            handledCalls.map(async (toolCall) => {
-              const content = EMULATED_TOOL_NAMES.has(toolCall.name)
-                ? await executeEmulatedTool({
-                    name: toolCall.name,
-                    argumentsText: toolCall.argumentsText,
-                    requestTools: searchableTools,
-                  })
-                : await appServerBridge.callTool(toolCall);
-              return {
-                role: "tool",
-                content: content.slice(0, MAX_TOOL_RESULT_CHARS),
-              };
-            }),
+            handledCalls.map(executeHandledToolCall),
           )
         ),
       );
@@ -951,6 +1238,7 @@ async function callOllama({ req, body, route, ollamaBaseUrl, res, debugAuth, app
       continue;
     }
 
+    flushThinking();
     if (emittedThinking && !completedThinking) {
       writeReasoningDone(res, { id, outputIndex: 0, text: fullText });
       completedThinking = true;
@@ -969,8 +1257,9 @@ async function callOllama({ req, body, route, ollamaBaseUrl, res, debugAuth, app
     }
     let outputIndex = output.length;
     externalCalls.forEach((toolCall, index) => {
-      writeFunctionCall(res, { id, outputIndex, callIndex: index, ...toolCall });
-      output.push(functionCallItem({ id, index, ...toolCall }));
+      const externalCall = toolBroker.externalize(toolCall);
+      writeResponseToolCall(res, { id, outputIndex, callIndex: index, ...externalCall });
+      output.push(responseToolCallItem({ id, index, ...externalCall }));
       outputIndex += 1;
     });
     writeResponseStreamDone(res, { id, model: body.model, output });
@@ -978,6 +1267,7 @@ async function callOllama({ req, body, route, ollamaBaseUrl, res, debugAuth, app
     break;
   }
   if (!completedResponse) {
+    flushThinking();
     if (emittedThinking && !completedThinking) {
       writeReasoningDone(res, { id, outputIndex: 0, text: fullText });
       completedThinking = true;
@@ -1045,13 +1335,15 @@ function mergeLMStudioToolCallDeltas(target, deltas) {
   }
 }
 
-async function callLMStudio({ req, body, route, lmStudioBaseUrl, res, debugAuth, signal }) {
+async function callLMStudio({ req, body, route, lmStudioBaseUrl, res, debugAuth, appServerBridge, signal }) {
   const stream = body.stream !== false;
   const id = responseId();
   const url = new URL("/v1/chat/completions", lmStudioBaseUrl);
-  let upstreamBody;
+  const toolBroker = await createLocalToolBroker({ req, body, appServerBridge, debugAuth });
+  let messages;
   try {
-    upstreamBody = buildLMStudioChatBody({ body, route, stream });
+    messages = normalizeLMStudioInput(body.input, { allowImages: Boolean(route.capabilities?.vision) });
+    if (body.instructions) messages.unshift({ role: "system", content: String(body.instructions) });
   } catch (error) {
     if (error.message.startsWith("Unsupported image input") || error.message.includes("vision support")) {
       jsonResponse(req, res, 400, { error: { message: error.message } }, debugAuth, {
@@ -1062,39 +1354,77 @@ async function callLMStudio({ req, body, route, lmStudioBaseUrl, res, debugAuth,
     throw error;
   }
 
-  debugLogUpstream({
-    enabled: debugAuth,
-    req,
-    route,
-    upstream: {
-      provider: "lmstudio",
-      url: url.toString(),
-      requestBytes: Buffer.byteLength(JSON.stringify(upstreamBody)),
+  async function fetchLMStudio({ stream }) {
+    const upstreamBody = buildLMStudioChatBody({
+      body,
+      route,
       stream,
-      toolCount: upstreamBody.tools?.length ?? 0,
-    },
-    stage: "request",
-  });
+      messages,
+      tools: toolBroker.modelTools,
+    });
+    debugLogUpstream({
+      enabled: debugAuth,
+      req,
+      route,
+      upstream: {
+        provider: "lmstudio",
+        url: url.toString(),
+        requestBytes: Buffer.byteLength(JSON.stringify(upstreamBody)),
+        stream,
+        toolCount: upstreamBody.tools?.length ?? 0,
+        appToolCount: toolBroker.appToolCount,
+      },
+      stage: "request",
+    });
 
-  const response = await fetch(url, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(upstreamBody),
-    signal,
-  });
-  signal.throwIfAborted();
-  debugLogUpstream({
-    enabled: debugAuth,
-    req,
-    route,
-    upstream: {
-      provider: "lmstudio",
-      url: url.toString(),
-      status: response.status,
-      contentType: response.headers.get("content-type"),
-    },
-    stage: "response",
-  });
+    const response = await fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(upstreamBody),
+      signal,
+    });
+    signal.throwIfAborted();
+    debugLogUpstream({
+      enabled: debugAuth,
+      req,
+      route,
+      upstream: {
+        provider: "lmstudio",
+        url: url.toString(),
+        status: response.status,
+        contentType: response.headers.get("content-type"),
+      },
+      stage: "response",
+    });
+    return { response, upstreamBody };
+  }
+
+  const appendHandledToolRound = async ({ turnContent, handledCalls, round }) => {
+    const calls = handledCalls.map((toolCall, index) => ({
+      ...toolCall,
+      callId: toolCall.callId ?? `call_${id}_local_${round}_${index}`,
+    }));
+    messages.push({
+      role: "assistant",
+      content: turnContent,
+      tool_calls: calls.map((toolCall) => ({
+        id: toolCall.callId,
+        type: "function",
+        function: { name: toolCall.name, arguments: toolCall.argumentsText },
+      })),
+    });
+    messages.push(
+      ...(await Promise.all(
+        calls.map(async (toolCall) => ({
+          role: "tool",
+          tool_call_id: toolCall.callId,
+          content: await toolBroker.execute(toolCall),
+        })),
+      )),
+    );
+  };
+
+  let { response, upstreamBody } = await fetchLMStudio({ stream });
 
   if (!response.ok) {
     const text = await response.text();
@@ -1106,29 +1436,66 @@ async function callLMStudio({ req, body, route, lmStudioBaseUrl, res, debugAuth,
   }
 
   if (!stream) {
-    const data = await response.json();
-    const message = data.choices?.[0]?.message ?? {};
-    const thinkingEnabled = upstreamBody.chat_template_kwargs?.enable_thinking === true;
-    const thinking = thinkingEnabled ? (message.reasoning_content ?? message.reasoning ?? "") : "";
-    const content = lmStudioMessageText(message.content);
-    const toolCalls = normalizeOllamaToolCalls(message.tool_calls);
-    const output = [];
-    if (thinking) output.push(reasoningItem({ id, status: "completed", text: thinking }));
-    if (content || !toolCalls.length) output.push(messageItem({ id, status: "completed", text: content }));
-    toolCalls.forEach((toolCall, index) => output.push(functionCallItem({ id, index, ...toolCall })));
-    const usage = data.usage ?? {};
+    for (let round = 0; round < MAX_EMULATED_TOOL_ROUNDS; round += 1) {
+      const data = await response.json();
+      const message = data.choices?.[0]?.message ?? {};
+      const thinkingEnabled = upstreamBody.chat_template_kwargs?.enable_thinking === true;
+      const thinking = thinkingEnabled
+        ? stripLocalControlMarkers(message.reasoning_content ?? message.reasoning ?? "")
+        : "";
+      const content = stripLocalControlMarkers(lmStudioMessageText(message.content));
+      const toolCalls = normalizeOllamaToolCalls(message.tool_calls);
+      const handledCalls = toolCalls.filter((toolCall) => toolBroker.isHandled(toolCall));
+      const externalCalls = toolCalls.filter((toolCall) => !toolBroker.isHandled(toolCall));
+      if (handledCalls.length && !externalCalls.length) {
+        await appendHandledToolRound({ turnContent: content, handledCalls, round });
+        ({ response, upstreamBody } = await fetchLMStudio({ stream: false }));
+        if (!response.ok) break;
+        continue;
+      }
+
+      const output = [];
+      if (thinking) output.push(reasoningItem({ id, status: "completed", text: thinking }));
+      if (content || !toolCalls.length) output.push(messageItem({ id, status: "completed", text: content }));
+      externalCalls.forEach((toolCall, index) => {
+        output.push(responseToolCallItem({ id, index, ...toolBroker.externalize(toolCall) }));
+      });
+      const usage = data.usage ?? {};
+      jsonResponse(
+        req,
+        res,
+        200,
+        {
+          ...responseEnvelope({ id, model: body.model, status: "completed", output }),
+          usage: {
+            input_tokens: usage.prompt_tokens ?? 0,
+            output_tokens: usage.completion_tokens ?? 0,
+            total_tokens: usage.total_tokens ?? 0,
+          },
+        },
+        debugAuth,
+        { route, upstream: { provider: "lmstudio", status: response.status } },
+      );
+      return;
+    }
+
+    const text = response.ok
+      ? "Stopped after repeated emulated tool calls without a final answer."
+      : await response.text();
     jsonResponse(
       req,
       res,
-      200,
-      {
-        ...responseEnvelope({ id, model: body.model, status: "completed", output }),
-        usage: {
-          input_tokens: usage.prompt_tokens ?? 0,
-          output_tokens: usage.completion_tokens ?? 0,
-          total_tokens: usage.total_tokens ?? 0,
-        },
-      },
+      response.ok ? 200 : response.status,
+      response.ok
+        ? {
+            ...responseEnvelope({
+              id,
+              model: body.model,
+              status: "completed",
+              output: [messageItem({ id, status: "completed", text })],
+            }),
+          }
+        : { error: { message: text || response.statusText } },
       debugAuth,
       { route, upstream: { provider: "lmstudio", status: response.status } },
     );
@@ -1144,71 +1511,136 @@ async function callLMStudio({ req, body, route, lmStudioBaseUrl, res, debugAuth,
   let emittedContent = false;
   let emittedThinking = false;
   let completedThinking = false;
-  const thinkingEnabled = upstreamBody.chat_template_kwargs?.enable_thinking === true;
-  const toolCallDeltas = [];
+  let totalToolCalls = 0;
+  let emulatedToolCalls = 0;
+  let appToolCalls = 0;
+  let completedResponse = false;
 
-  const handleLine = (line) => {
-    const trimmed = line.trim();
-    if (!trimmed.startsWith("data:")) return;
-    const payload = trimmed.slice(5).trim();
-    if (!payload || payload === "[DONE]") return;
-    const event = JSON.parse(payload);
-    const delta = event.choices?.[0]?.delta ?? {};
-    const reasoningDelta = thinkingEnabled ? (delta.reasoning_content ?? delta.reasoning ?? "") : "";
-    const contentDelta = lmStudioMessageText(delta.content);
-    if (reasoningDelta) {
-      if (!emittedThinking) writeReasoningStart(res, { id, outputIndex: 0 });
-      writeReasoningDelta(res, { id, outputIndex: 0, delta: reasoningDelta });
-      thinking += reasoningDelta;
-      emittedThinking = true;
-    }
-    if (contentDelta) {
-      if (emittedThinking && !completedThinking) {
-        writeReasoningDone(res, { id, outputIndex: 0, text: thinking });
-        completedThinking = true;
-      }
-      if (!emittedContent) writeMessageStart(res, { id, outputIndex: emittedThinking ? 1 : 0 });
-      writeSse(res, "response.output_text.delta", {
-        type: "response.output_text.delta",
-        item_id: `${id}_msg`,
-        output_index: emittedThinking ? 1 : 0,
-        content_index: 0,
-        delta: contentDelta,
-      });
-      content += contentDelta;
-      emittedContent = true;
-    }
-    mergeLMStudioToolCallDeltas(toolCallDeltas, delta.tool_calls);
+  const emitThinkingDelta = (delta) => {
+    if (!delta) return;
+    if (!emittedThinking) writeReasoningStart(res, { id, outputIndex: 0 });
+    writeReasoningDelta(res, { id, outputIndex: 0, delta });
+    thinking += delta;
+    emittedThinking = true;
   };
 
-  for await (const chunk of response.body) {
-    signal.throwIfAborted();
-    buffer += decoder.decode(chunk, { stream: true });
-    const lines = buffer.split(/\r?\n/);
-    buffer = lines.pop() ?? "";
-    for (const line of lines) handleLine(line);
-  }
-  if (buffer.trim()) handleLine(buffer);
+  const emitContentDelta = (delta) => {
+    if (!delta) return;
+    if (emittedThinking && !completedThinking) {
+      writeReasoningDone(res, { id, outputIndex: 0, text: thinking });
+      completedThinking = true;
+    }
+    if (!emittedContent) writeMessageStart(res, { id, outputIndex: emittedThinking ? 1 : 0 });
+    writeSse(res, "response.output_text.delta", {
+      type: "response.output_text.delta",
+      item_id: `${id}_msg`,
+      output_index: emittedThinking ? 1 : 0,
+      content_index: 0,
+      delta,
+    });
+    content += delta;
+    emittedContent = true;
+  };
 
-  if (emittedThinking && !completedThinking) {
-    writeReasoningDone(res, { id, outputIndex: 0, text: thinking });
+  for (let round = 0; round < MAX_EMULATED_TOOL_ROUNDS; round += 1) {
+    const toolCallDeltas = [];
+    const contentFilter = createLocalControlMarkerFilter();
+    const thinkingFilter = createLocalControlMarkerFilter();
+    const thinkingEnabled = upstreamBody.chat_template_kwargs?.enable_thinking === true;
+    let turnContent = "";
+    buffer = "";
+
+    const flushRoundThinking = () => emitThinkingDelta(thinkingFilter.finish());
+    const handleLine = (line) => {
+      const trimmed = line.trim();
+      if (!trimmed.startsWith("data:")) return;
+      const payload = trimmed.slice(5).trim();
+      if (!payload || payload === "[DONE]") return;
+      const event = JSON.parse(payload);
+      const delta = event.choices?.[0]?.delta ?? {};
+      const reasoningDelta = thinkingEnabled
+        ? thinkingFilter.push(delta.reasoning_content ?? delta.reasoning ?? "")
+        : "";
+      const contentDelta = contentFilter.push(lmStudioMessageText(delta.content));
+      emitThinkingDelta(reasoningDelta);
+      if (contentDelta) {
+        flushRoundThinking();
+        emitContentDelta(contentDelta);
+        turnContent += contentDelta;
+      }
+      mergeLMStudioToolCallDeltas(toolCallDeltas, delta.tool_calls);
+    };
+
+    for await (const chunk of response.body) {
+      signal.throwIfAborted();
+      buffer += decoder.decode(chunk, { stream: true });
+      const lines = buffer.split(/\r?\n/);
+      buffer = lines.pop() ?? "";
+      for (const line of lines) handleLine(line);
+    }
+    if (buffer.trim()) handleLine(buffer);
+    flushRoundThinking();
+    const contentTail = contentFilter.finish();
+    if (contentTail) {
+      emitContentDelta(contentTail);
+      turnContent += contentTail;
+    }
+
+    const toolCalls = normalizeOllamaToolCalls(toolCallDeltas);
+    totalToolCalls += toolCalls.length;
+    const handledCalls = toolCalls.filter((toolCall) => toolBroker.isHandled(toolCall));
+    const externalCalls = toolCalls.filter((toolCall) => !toolBroker.isHandled(toolCall));
+    if (handledCalls.length && !externalCalls.length) {
+      emulatedToolCalls += handledCalls.filter((toolCall) => toolBroker.isEmulated(toolCall)).length;
+      appToolCalls += handledCalls.filter((toolCall) => toolBroker.isAppTool(toolCall)).length;
+      await appendHandledToolRound({ turnContent, handledCalls, round });
+      ({ response, upstreamBody } = await fetchLMStudio({ stream: true }));
+      if (!response.ok) {
+        emitContentDelta((await response.text()) || response.statusText);
+        break;
+      }
+      continue;
+    }
+
+    if (emittedThinking && !completedThinking) {
+      writeReasoningDone(res, { id, outputIndex: 0, text: thinking });
+      completedThinking = true;
+    }
+    const output = [];
+    if (emittedThinking) output.push(reasoningItem({ id, status: "completed", text: thinking }));
+    if (emittedContent || !toolCalls.length) {
+      const outputIndex = emittedThinking ? 1 : 0;
+      if (!emittedContent) writeMessageStart(res, { id, outputIndex });
+      writeMessageDone(res, { id, outputIndex, text: content });
+      output.push(messageItem({ id, status: "completed", text: content }));
+    }
+    let outputIndex = output.length;
+    externalCalls.forEach((toolCall, index) => {
+      const externalCall = toolBroker.externalize(toolCall);
+      writeResponseToolCall(res, { id, outputIndex, callIndex: index, ...externalCall });
+      output.push(responseToolCallItem({ id, index, ...externalCall }));
+      outputIndex += 1;
+    });
+    writeResponseStreamDone(res, { id, model: body.model, output });
+    completedResponse = true;
+    break;
   }
-  const toolCalls = normalizeOllamaToolCalls(toolCallDeltas);
-  const output = [];
-  if (emittedThinking) output.push(reasoningItem({ id, status: "completed", text: thinking }));
-  if (emittedContent || !toolCalls.length) {
+
+  if (!completedResponse) {
+    if (emittedThinking && !completedThinking) {
+      writeReasoningDone(res, { id, outputIndex: 0, text: thinking });
+      completedThinking = true;
+    }
     const outputIndex = emittedThinking ? 1 : 0;
     if (!emittedContent) writeMessageStart(res, { id, outputIndex });
-    writeMessageDone(res, { id, outputIndex, text: content });
-    output.push(messageItem({ id, status: "completed", text: content }));
+    const fallback = content || "Stopped after repeated emulated tool calls without a final answer.";
+    if (!content) emitContentDelta(fallback);
+    writeMessageDone(res, { id, outputIndex, text: fallback });
+    const output = [];
+    if (emittedThinking) output.push(reasoningItem({ id, status: "completed", text: thinking }));
+    output.push(messageItem({ id, status: "completed", text: fallback }));
+    writeResponseStreamDone(res, { id, model: body.model, output });
   }
-  let outputIndex = output.length;
-  toolCalls.forEach((toolCall, index) => {
-    writeFunctionCall(res, { id, outputIndex, callIndex: index, ...toolCall });
-    output.push(functionCallItem({ id, index, ...toolCall }));
-    outputIndex += 1;
-  });
-  writeResponseStreamDone(res, { id, model: body.model, output });
   res.write("data: [DONE]\n\n");
   res.end();
   debugLogAccess({
@@ -1222,7 +1654,9 @@ async function callLMStudio({ req, body, route, lmStudioBaseUrl, res, debugAuth,
       stream: true,
       contentChars: content.length,
       thinkingChars: thinking.length,
-      toolCalls: toolCalls.length,
+      toolCalls: totalToolCalls,
+      emulatedToolCalls,
+      appToolCalls,
     },
   });
 }
@@ -1435,7 +1869,16 @@ export function createHydraHandler({
       }
 
       if (route.provider === "lmstudio") {
-        await callLMStudio({ req, body, route, lmStudioBaseUrl, res, debugAuth, signal: cancellation.signal });
+        await callLMStudio({
+          req,
+          body,
+          route,
+          lmStudioBaseUrl,
+          res,
+          debugAuth,
+          appServerBridge,
+          signal: cancellation.signal,
+        });
         return;
       }
 

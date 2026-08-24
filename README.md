@@ -71,13 +71,25 @@ The prefix avoids name collisions and lets Hydra choose the correct upstream det
 
 For LM Studio routes, Hydra normalizes `reasoning.effort`, `reasoning_effort`, and `reasoning_level` from Responses requests. Codex Desktop's visible `low` preset and an explicit `none` are translated to `chat_template_kwargs.enable_thinking: false` and LM Studio's documented `reasoning_effort: "none"`. Other efforts enable the chat-template thinking mode and are forwarded only when the route advertises thinking support. If reasoning is omitted, or another effort targets a route without thinking capability, Hydra preserves the route's existing behavior without enabling thinking.
 
+For local-model turns, Hydra removes `request_user_input` unless Codex explicitly marks the turn as Plan mode, because Codex only executes that tool in Plan mode. Treating Plan as an opt-in also protects CLI and older Desktop requests that omit collaboration-mode metadata.
+
+Hydra exposes hosted `web_search` and `tool_search` declarations to both local providers only when their Hydra executors are ready. Hydra executes those calls inside a bounded local tool loop, returns the results to the model, and sends only the final answer back to Desktop.
+
+Desktop-owned function tools such as `exec_command` remain delegated to Codex Desktop so its workspace sandbox and approval policy stay authoritative. Responses custom tools such as `apply_patch` are wrapped as local JSON functions and translated back to `custom_tool_call` events when selected.
+
+Hydra strips leaked channel-control markers such as `<|channel>thought ... <channel|>` from both streaming and non-streaming local-model output. The streaming filter buffers partial markers so control tokens split across upstream chunks are not exposed to Codex Desktop.
+
 With `stream: true`, Hydra sends a streaming LM Studio chat-completions request and translates chunks to Responses SSE as they arrive; it does not wait for the complete local response. Text is emitted as `response.output_text.delta`. Reasoning-summary events are emitted only when thinking was explicitly enabled, and an explicit `none` never emits them. Successful streams end with `response.completed` followed by `data: [DONE]`.
 
 Every Responses request has a request-scoped cancellation signal. If the client aborts the request or closes the downstream response before completion, Hydra aborts the active LM Studio, Ollama, or cloud fetch and stops consuming its stream. A normal completed socket close does not trigger cancellation.
 
 ## App Tools
 
-By default, `serve` starts a local `codex app-server --listen stdio://` bridge and exposes tools from the `codex_apps` MCP server to Ollama routes. That is how Ollama models can discover and call connected apps such as Gmail through the same tool catalog Desktop uses. LM Studio routes currently receive only the tools supplied by the request; they do not use the app-server bridge.
+By default, `serve` starts a local `codex app-server --listen stdio://` bridge and exposes tools from the `codex_apps` MCP server to both Ollama and LM Studio routes. For `codex_apps`, Hydra accepts only entries carrying App Server's connector, active-link, and resource metadata, so uninstalled or unconnected catalog entries are excluded. The individual tool schemas stay deferred behind `tool_search`; Hydra injects only the matching linked tools into the next local-model round instead of placing the entire app catalog in every prompt.
+
+That is how local models can discover and call installed plugins and connected apps through the same authenticated App Server catalog Desktop uses. Skills remain part of the Desktop-supplied instructions and can invoke these plugin tools or Desktop-owned tools normally.
+
+Hydra classifies each local tool call by execution owner. Hosted emulations and App Server plugin calls execute inside Hydra and continue the same local-model turn; shell, filesystem, approval, and other Desktop-native calls are returned as Responses events for the Codex harness to execute.
 
 Disable the bridge with:
 

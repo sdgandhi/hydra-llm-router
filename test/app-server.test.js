@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   appToolSourceFromOllamaTool,
   formatMcpToolResult,
+  isEnabledAppServerTool,
   mcpToolToOllamaTool,
   parseAppToolServers,
   resolveCodexBin,
@@ -71,6 +72,38 @@ test("converts MCP tools to Ollama functions", () => {
     description: "Search Gmail",
     parameters: { type: "object", properties: { query: { type: "string" } } },
   });
+});
+
+test("keeps only linked and enabled Codex app tools", () => {
+  const server = { name: "codex_apps" };
+  assert.equal(
+    isEnabledAppServerTool({
+      server,
+      tool: {
+        name: "gmail.search",
+        _meta: {
+          connector_id: "gmail",
+          link_id: "linked-account",
+          _codex_apps: { resource_uri: "/gmail/linked-account/search" },
+        },
+      },
+    }),
+    true,
+  );
+  assert.equal(
+    isEnabledAppServerTool({
+      server,
+      tool: {
+        name: "uninstalled.search",
+        _meta: { connector_id: "uninstalled", _codex_apps: { resource_uri: "/catalog/search" } },
+      },
+    }),
+    false,
+  );
+  assert.equal(
+    isEnabledAppServerTool({ server: { name: "node_repl" }, tool: { name: "js_eval" } }),
+    true,
+  );
 });
 
 test("formats MCP structured content before raw text", () => {

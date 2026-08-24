@@ -70,6 +70,17 @@ export function mcpToolToOllamaTool({ server, tool }) {
   };
 }
 
+export function isEnabledAppServerTool({ server, tool }) {
+  if (!tool?.name) return false;
+  if (server?.name !== "codex_apps") return true;
+  const meta = tool._meta ?? {};
+  return Boolean(
+    meta.connector_id
+    && meta.link_id
+    && meta._codex_apps?.resource_uri,
+  );
+}
+
 export function appToolSourceFromOllamaTool(tool) {
   const source = tool?.function ?? tool ?? {};
   return {
@@ -131,7 +142,16 @@ export class AppServerBridge {
     }
     try {
       const tools = await this.getTools();
-      return { enabled: true, status: "ready", toolCount: tools.length, servers: this.toolServers };
+      const connectors = new Set(
+        tools.map((tool) => tool._hydraAppTool?.meta?.connector_id).filter(Boolean),
+      );
+      return {
+        enabled: true,
+        status: "ready",
+        toolCount: tools.length,
+        connectorCount: connectors.size,
+        servers: this.toolServers,
+      };
     } catch (error) {
       return {
         enabled: true,
@@ -160,7 +180,7 @@ export class AppServerBridge {
     for (const server of response?.data ?? []) {
       if (!toolServers.has(server.name)) continue;
       for (const tool of Object.values(server.tools ?? {})) {
-        if (!tool?.name) continue;
+        if (!isEnabledAppServerTool({ server, tool })) continue;
         tools.push(mcpToolToOllamaTool({ server: server.name, tool }));
       }
     }
