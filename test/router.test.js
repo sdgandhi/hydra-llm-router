@@ -1304,6 +1304,75 @@ test("returns LM Studio custom-tool calls in the Responses custom call shape", a
   }
 });
 
+test("wraps LM Studio exec command arguments as JavaScript custom-tool input", async () => {
+  const tempDir = await mkdtemp(join(tmpdir(), "hydra-router-test-"));
+  const routesPath = join(tempDir, "routes.json");
+  await writeFile(
+    routesPath,
+    JSON.stringify({
+      "lmstudio/tool-model": {
+        provider: "lmstudio",
+        upstreamModel: "tool-model",
+        capabilities: { tools: true },
+      },
+    }),
+  );
+
+  const originalFetch = globalThis.fetch;
+  let hydra;
+  globalThis.fetch = async () => new Response(
+    'data: {"choices":[{"delta":{"tool_calls":[' +
+      '{"index":0,"function":{"name":"exec","arguments":"{\\"cmd\\":\\"ls -a\\",\\"workdir\\":\\"/tmp\\"}"}},' +
+      '{"index":1,"function":{"name":"exec","arguments":"{\\"namespace\\":\\"functions.exec\\",\\"args\\":{\\"cmd\\":\\"pwd\\",\\"workdir\\":\\"/var/tmp\\"}}"}}' +
+      ']}}]}\n\n' +
+      "data: [DONE]\n\n",
+    { status: 200, headers: { "content-type": "text/event-stream" } },
+  );
+
+  try {
+    const handler = createHydraHandler({
+      paths: { routesPath },
+      ollamaBaseUrl: "http://127.0.0.1:11434",
+      lmStudioBaseUrl: "http://127.0.0.1:11239",
+      openaiBaseUrl: "https://chatgpt.com/backend-api/codex",
+    });
+    hydra = createHttpServer(handler);
+    hydra.listen(0, "127.0.0.1");
+    await once(hydra, "listening");
+
+    const response = await originalFetch(`http://127.0.0.1:${hydra.address().port}/responses`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "lmstudio/tool-model",
+        input: "list files",
+        stream: true,
+        tools: [{ type: "custom", name: "exec", description: "Run JavaScript" }],
+      }),
+    });
+    const text = await response.text();
+    const inputs = text
+      .split("\n")
+      .filter((line) => (
+        line.startsWith("data: ") && line.includes('"type":"response.custom_tool_call_input.done"')
+      ))
+      .map((line) => JSON.parse(line.slice("data: ".length)).input);
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(inputs, [
+      'const r = await tools.exec_command({"cmd":"ls -a","workdir":"/tmp"}); text(r.output);',
+      'const r = await tools.exec_command({"cmd":"pwd","workdir":"/var/tmp"}); text(r.output);',
+    ]);
+  } finally {
+    if (hydra?.listening) {
+      hydra.close();
+      await Promise.allSettled([once(hydra, "close")]);
+    }
+    globalThis.fetch = originalFetch;
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
 test("emulates hosted web search inside non-streaming LM Studio turns", async () => {
   const tempDir = await mkdtemp(join(tmpdir(), "hydra-router-test-"));
   const routesPath = join(tempDir, "routes.json");

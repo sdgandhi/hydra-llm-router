@@ -459,9 +459,22 @@ function functionCallItem({ id, index, status = "completed", name, argumentsText
   };
 }
 
-function customToolInput(argumentsText) {
+function execToolInput(parsed) {
+  const args = parsed?.namespace === "functions.exec" && parsed.args && typeof parsed.args === "object"
+    ? parsed.args
+    : parsed;
+  if (!args || typeof args !== "object" || typeof args.cmd !== "string") return null;
+  return `const r = await tools.exec_command(${JSON.stringify(args)}); text(r.output);`;
+}
+
+function customToolInput(argumentsText, name) {
   const parsed = parseToolArguments(argumentsText);
-  return typeof parsed?.input === "string" ? parsed.input : String(argumentsText ?? "");
+  if (typeof parsed?.input === "string") return parsed.input;
+  if (name === "exec") {
+    const input = execToolInput(parsed);
+    if (input) return input;
+  }
+  return String(argumentsText ?? "");
 }
 
 function customToolCallItem({ id, index, status = "completed", name, argumentsText = "" }) {
@@ -471,7 +484,7 @@ function customToolCallItem({ id, index, status = "completed", name, argumentsTe
     status,
     call_id: `call_${id}_${index}`,
     name,
-    input: customToolInput(argumentsText),
+    input: customToolInput(argumentsText, name),
   };
 }
 
@@ -819,7 +832,7 @@ function writeFunctionCall(res, { id, outputIndex, callIndex, name, argumentsTex
 }
 
 function writeCustomToolCall(res, { id, outputIndex, callIndex, name, argumentsText }) {
-  const input = customToolInput(argumentsText);
+  const input = customToolInput(argumentsText, name);
   const addedItem = customToolCallItem({ id, index: callIndex, status: "in_progress", name, argumentsText: "" });
   const doneItem = customToolCallItem({ id, index: callIndex, status: "completed", name, argumentsText });
   writeSse(res, "response.output_item.added", {
