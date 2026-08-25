@@ -14,7 +14,15 @@ import {
   debugLogRequest,
   debugLogUpgrade,
   debugLogUpstream,
+  debugLogSynthetic,
 } from "./debug.js";
+import { ResponseGate } from "./response-gate.js";
+import {
+  buildSelectorContext,
+  runSyntheticSelector,
+  selectorFeatures,
+  validateSelectorTarget,
+} from "./synthetic.js";
 
 const execFileAsync = promisify(execFile);
 const EMULATED_TOOL_NAMES = new Set(["web_search", "tool_search"]);
@@ -1776,6 +1784,324 @@ function forwardedHeaders(sourceHeaders) {
   return headers;
 }
 
+function requestedReasoningEffort(body) {
+  const effort = body?.reasoning?.effort ?? body?.reasoning_effort ?? body?.reasoning_level ?? "medium";
+  return effort === "light" ? "low" : effort;
+}
+
+function effectiveReasoningEffort(route, requested) {
+  if (requested === "none") return "none";
+  if (route.capabilities?.thinking === false) return "none";
+  return requested;
+}
+
+function bodyWithReasoningEffort(body, effort) {
+  const copy = structuredClone(body);
+  if (copy.reasoning && typeof copy.reasoning === "object") copy.reasoning.effort = effort;
+  else copy.reasoning = { effort };
+  if ("reasoning_effort" in copy) copy.reasoning_effort = effort;
+  if ("reasoning_level" in copy) copy.reasoning_level = effort;
+  return copy;
+}
+
+function hasToolResultInput(body) {
+  return Array.isArray(body?.input) && body.input.some(
+    (item) => item?.type === "function_call_output" || item?.type === "custom_tool_call_output",
+  );
+}
+
+function syntheticSessionKey(req, definition) {
+  const sessionId = req.headers["session-id"];
+  if (!sessionId) return null;
+  return `${definition.slug}:${Array.isArray(sessionId) ? sessionId[0] : sessionId}`;
+}
+
+function requestSource(req) {
+  return /codex[_\s-]?cli/i.test(String(req.headers["user-agent"] ?? "")) ? "cli" : "codex";
+}
+
+function delayWithSignal(ms, signal) {
+  if (!ms) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(finish, ms);
+    const onAbort = () => {
+      clearTimeout(timeout);
+      reject(signal.reason ?? new DOMException("Request cancelled", "AbortError"));
+    };
+    function finish() {
+      signal.removeEventListener("abort", onAbort);
+      resolve();
+    }
+    if (signal.aborted) onAbort();
+    else signal.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+async function dispatchDirectRoute({
+  req,
+  body,
+  route,
+  ollamaBaseUrl,
+  lmStudioBaseUrl,
+  openaiBaseUrl,
+  apiKey,
+  res,
+  debugAuth,
+  appServerBridge,
+  signal,
+}) {
+  if (route.provider === "ollama") {
+    await callOllama({ req, body, route, ollamaBaseUrl, res, debugAuth, appServerBridge, signal });
+    return;
+  }
+  if (route.provider === "lmstudio") {
+    await callLMStudio({ req, body, route, lmStudioBaseUrl, res, debugAuth, appServerBridge, signal });
+    return;
+  }
+  await forwardOpenAI({ req, body, openaiBaseUrl, apiKey, res, route, debugAuth, signal });
+}
+
+function safeSyntheticError(error) {
+  return { name: error?.name ?? "Error", code: error?.code, stage: error?.hydraStage };
+}
+
+async function runDirectAttempts({
+  targetSlug,
+  phase,
+  definition,
+  routes,
+  res,
+  signal,
+  debugAuth,
+  source,
+  dispatchArgs,
+}) {
+  let lastError;
+  for (let attempt = 0; attempt <= definition.retryCount; attempt += 1) {
+    signal.throwIfAborted();
+    const route = routes[targetSlug];
+    const gate = new ResponseGate(res);
+    debugLogSynthetic({
+      enabled: debugAuth,
+      event: "attempt",
+      payload: { source, syntheticModel: definition.slug, target: targetSlug, phase, attempt: attempt + 1 },
+    });
+    try {
+      await dispatchDirectRoute({ ...dispatchArgs, route, res: gate, signal });
+      if (gate.committed) return { targetSlug, route };
+      const error = gate.failureError ?? new Error(`Upstream returned HTTP ${gate.statusCode}`);
+      error.status = gate.statusCode;
+      throw error;
+    } catch (error) {
+      if (gate.committed || res.headersSent) {
+        error.hydraPostCommit = true;
+        throw error;
+      }
+      lastError = error;
+      debugLogSynthetic({
+        enabled: debugAuth,
+        event: "attempt-failed",
+        payload: {
+          source,
+          syntheticModel: definition.slug,
+          target: targetSlug,
+          phase,
+          attempt: attempt + 1,
+          error: safeSyntheticError(error),
+        },
+      });
+      if (attempt < definition.retryCount) await delayWithSignal(definition.retryDelayMs, signal);
+    }
+  }
+  throw lastError ?? new Error(`Model failed without a response: ${targetSlug}`);
+}
+
+function writePostCommitFailure(res, model) {
+  if (res.destroyed || res.writableEnded) return;
+  const id = responseId();
+  writeSse(res, "response.failed", {
+    type: "response.failed",
+    response: {
+      ...responseEnvelope({ id, model, status: "failed" }),
+      error: { code: "hydra_upstream_failed", message: "The selected model failed after response output began." },
+    },
+  });
+  res.write("data: [DONE]\n\n");
+  res.end();
+}
+
+async function handleSyntheticRequest({
+  req,
+  body,
+  syntheticRoute,
+  routes,
+  state,
+  res,
+  signal,
+  ollamaBaseUrl,
+  lmStudioBaseUrl,
+  openaiBaseUrl,
+  apiKey,
+  debugAuth,
+  appServerBridge,
+  source = "codex",
+  inspectOnly = false,
+  syntheticContextOptions = {},
+}) {
+  const definition = syntheticRoute.definition;
+  const sessionKey = syntheticSessionKey(req, definition);
+  const requestedEffort = requestedReasoningEffort(body);
+  const conversationLock = sessionKey ? state.conversations.get(sessionKey) : null;
+  const turnLock = sessionKey && hasToolResultInput(body) && definition.stickyToolContinuations
+    ? state.turns.get(sessionKey)
+    : null;
+  const lock = definition.routingScope === "conversation" ? conversationLock : turnLock;
+  let context;
+  let selectedSlug;
+  let effectiveEffort;
+  let selectionFallback = false;
+  let selectionError;
+
+  if (lock) {
+    context = { features: selectorFeatures(body) };
+    try {
+      const selected = validateSelectorTarget({ definition, target: lock.targetSlug, context, routes });
+      selectedSlug = selected.slug;
+      effectiveEffort = lock.reasoningEffort;
+    } catch (error) {
+      selectionFallback = true;
+      selectionError = error;
+      const fallback = validateSelectorTarget({ definition, target: definition.fallbackModel, context, routes });
+      selectedSlug = fallback.slug;
+      effectiveEffort = effectiveReasoningEffort(fallback.route, requestedEffort);
+    }
+  } else {
+    context = await buildSelectorContext({
+      definition,
+      body,
+      routes,
+      ollamaBaseUrl,
+      lmStudioBaseUrl,
+      signal,
+      source,
+      ...syntheticContextOptions,
+    });
+    signal.throwIfAborted();
+    try {
+      const result = await runSyntheticSelector({ definition, context, signal });
+      const selected = validateSelectorTarget({ definition, target: result, context, routes });
+      selectedSlug = selected.slug;
+      effectiveEffort = effectiveReasoningEffort(selected.route, requestedEffort);
+    } catch (error) {
+      selectionFallback = true;
+      selectionError = error;
+      const fallback = validateSelectorTarget({
+        definition,
+        target: definition.fallbackModel,
+        context,
+        routes,
+      });
+      selectedSlug = fallback.slug;
+      effectiveEffort = effectiveReasoningEffort(fallback.route, requestedEffort);
+    }
+  }
+
+  debugLogSynthetic({
+    enabled: debugAuth,
+    event: "decision",
+    payload: {
+      source,
+      syntheticModel: definition.slug,
+      routingScope: definition.routingScope,
+      stickyReuse: Boolean(lock),
+      selected: selectedSlug,
+      fallback: selectionFallback,
+      requestedReasoningEffort: requestedEffort,
+      effectiveReasoningEffort: effectiveEffort,
+      features: context.features,
+      candidates: context.candidates,
+      providers: context.providers,
+      machine: context.machine,
+      error: selectionError ? safeSyntheticError(selectionError) : undefined,
+    },
+  });
+
+  if (inspectOnly) return { target: selectedSlug, fallback: selectionFallback, reasoningEffort: effectiveEffort };
+
+  const routedBody = bodyWithReasoningEffort(body, effectiveEffort);
+  const dispatchArgs = {
+    req,
+    body: routedBody,
+    ollamaBaseUrl,
+    lmStudioBaseUrl,
+    openaiBaseUrl,
+    apiKey,
+    debugAuth,
+    appServerBridge,
+  };
+  let ultimate;
+  try {
+    try {
+      ultimate = await runDirectAttempts({
+        targetSlug: selectedSlug,
+        phase: selectionFallback ? "fallback" : "selected",
+        definition,
+        routes,
+        res,
+        signal,
+        debugAuth,
+        source,
+        dispatchArgs,
+      });
+    } catch (error) {
+      if (error.hydraPostCommit || selectionFallback) throw error;
+      const fallback = validateSelectorTarget({ definition, target: definition.fallbackModel, context, routes });
+      const fallbackEffort = effectiveReasoningEffort(fallback.route, requestedEffort);
+      dispatchArgs.body = bodyWithReasoningEffort(body, fallbackEffort);
+      effectiveEffort = fallbackEffort;
+      ultimate = await runDirectAttempts({
+        targetSlug: fallback.slug,
+        phase: "fallback",
+        definition,
+        routes,
+        res,
+        signal,
+        debugAuth,
+        source,
+        dispatchArgs,
+      });
+    }
+  } catch (error) {
+    if (error.hydraPostCommit) writePostCommitFailure(res, body.model);
+    throw error;
+  }
+
+  if (sessionKey) {
+    const locked = { targetSlug: ultimate.targetSlug, reasoningEffort: effectiveEffort };
+    if (definition.routingScope === "conversation") state.conversations.set(sessionKey, locked);
+    else if (definition.stickyToolContinuations) state.turns.set(sessionKey, locked);
+  }
+  state.lastSelections.set(definition.slug, {
+    selected: selectedSlug,
+    ultimate: ultimate.targetSlug,
+    fallback: ultimate.targetSlug !== selectedSlug || selectionFallback,
+    at: new Date().toISOString(),
+  });
+  debugLogSynthetic({
+    enabled: debugAuth,
+    event: "completed",
+    payload: {
+      source,
+      syntheticModel: definition.slug,
+      selected: selectedSlug,
+      ultimate: ultimate.targetSlug,
+      fallback: ultimate.targetSlug !== selectedSlug || selectionFallback,
+      reasoningEffort: effectiveEffort,
+    },
+  });
+  return { target: ultimate.targetSlug, fallback: ultimate.targetSlug !== selectedSlug || selectionFallback };
+}
+
 export function upstreamResponsesUrl(requestPath, openaiBaseUrl) {
   const base = new URL(openaiBaseUrl);
   const basePath = base.pathname.replace(/\/+$/g, "");
@@ -1808,7 +2134,19 @@ export function createHydraHandler({
   apiKey,
   debugAuth = false,
   appServerBridge = null,
+  syntheticContextOptions = {},
 }) {
+  const syntheticState = {
+    conversations: new Map(),
+    turns: new Map(),
+    lastSelections: new Map(),
+    clear() {
+      this.conversations.clear();
+      this.turns.clear();
+      this.lastSelections.clear();
+    },
+  };
+
   async function hydraHandler(req, res) {
     let cancellation;
     let route;
@@ -1833,7 +2171,9 @@ export function createHydraHandler({
         return;
       }
 
-      if (req.method !== "POST" || !["/responses", "/v1/responses"].includes(req.url)) {
+      const isResponsesRequest = req.method === "POST" && ["/responses", "/v1/responses"].includes(req.url);
+      const isRouteInspection = req.method === "POST" && req.url === "/hydra/route";
+      if (!isResponsesRequest && !isRouteInspection) {
         jsonResponse(req, res, 404, { error: { message: "Not found" } }, debugAuth);
         return;
       }
@@ -1881,26 +2221,66 @@ export function createHydraHandler({
         return;
       }
 
-      if (route.provider === "ollama") {
-        await callOllama({ req, body, route, ollamaBaseUrl, res, debugAuth, appServerBridge, signal: cancellation.signal });
+      if (isRouteInspection) {
+        if (route.provider !== "synthetic") {
+          jsonResponse(req, res, 400, { error: { message: "Route inspection requires a synthetic model" } }, debugAuth);
+          return;
+        }
+        const decision = await handleSyntheticRequest({
+          req,
+          body,
+          syntheticRoute: route,
+          routes,
+          state: syntheticState,
+          res,
+          signal: cancellation.signal,
+          ollamaBaseUrl,
+          lmStudioBaseUrl,
+          openaiBaseUrl,
+          apiKey,
+          debugAuth,
+          appServerBridge,
+          source: "cli",
+          inspectOnly: true,
+          syntheticContextOptions,
+        });
+        jsonResponse(req, res, 200, decision, debugAuth, { route });
         return;
       }
 
-      if (route.provider === "lmstudio") {
-        await callLMStudio({
+      if (route.provider === "synthetic") {
+        await handleSyntheticRequest({
           req,
           body,
-          route,
-          lmStudioBaseUrl,
+          syntheticRoute: route,
+          routes,
+          state: syntheticState,
           res,
+          signal: cancellation.signal,
+          ollamaBaseUrl,
+          lmStudioBaseUrl,
+          openaiBaseUrl,
+          apiKey,
           debugAuth,
           appServerBridge,
-          signal: cancellation.signal,
+          syntheticContextOptions,
+          source: requestSource(req),
         });
         return;
       }
-
-      await forwardOpenAI({ req, body, openaiBaseUrl, apiKey, res, route, debugAuth, signal: cancellation.signal });
+      await dispatchDirectRoute({
+        req,
+        body,
+        route,
+        ollamaBaseUrl,
+        lmStudioBaseUrl,
+        openaiBaseUrl,
+        apiKey,
+        res,
+        debugAuth,
+        appServerBridge,
+        signal: cancellation.signal,
+      });
     } catch (error) {
       if (cancellation?.stage) {
         debugLogCancellation({ enabled: debugAuth, req, route, stage: cancellation.stage });
@@ -1920,6 +2300,7 @@ export function createHydraHandler({
   hydraHandler.handleUpgrade = (req, socket) => {
     rejectUpgrade({ req, socket, debugAuth });
   };
+  hydraHandler.syntheticState = syntheticState;
 
   return hydraHandler;
 }

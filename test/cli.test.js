@@ -1,6 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { buildConfig, parseArgs, shutdownHydra } from "../src/cli.js";
+import {
+  buildConfig,
+  codexConfigArgs,
+  parseArgs,
+  parseCodexJsonEvent,
+  runRouteCommand,
+  shutdownHydra,
+} from "../src/cli.js";
 import { menuBarStatusItems } from "../src/menubar.js";
 
 test("parses --no-menubar as a serve flag", () => {
@@ -19,6 +26,64 @@ test("parses app tool bridge flags", () => {
   assert.equal(config.codexBin, "/tmp/codex");
   assert.deepEqual(config.appToolServers, ["codex_apps", "node_repl"]);
   assert.equal(config.lmStudioBaseUrl, "http://127.0.0.1:11239");
+});
+
+test("parses debug and repeatable prompt inputs", () => {
+  assert.deepEqual(parseArgs(["session", "--model", "hydra/smart", "--input", "one", "--input", "two", "--debug"]), {
+    command: "session",
+    options: { model: "hydra/smart", input: ["one", "two"], debug: true },
+  });
+});
+
+test("builds Codex CLI overrides that force requests through Hydra", () => {
+  const args = codexConfigArgs(
+    { port: 3847, paths: { catalogPath: "/tmp/hydra-models.json" } },
+    { model: "hydra/money-saver", reasoning: "high", image: ["one.png"] },
+  );
+  assert.deepEqual(args, [
+    "-c",
+    'model_catalog_json="/tmp/hydra-models.json"',
+    "-c",
+    'openai_base_url="http://127.0.0.1:3847"',
+    "-m",
+    "hydra/money-saver",
+    "-c",
+    'model_reasoning_effort="high"',
+    "-i",
+    "one.png",
+  ]);
+});
+
+test("route command invokes the running server and prints only its target", async () => {
+  const logs = [];
+  let request;
+  const result = await runRouteCommand(
+    { port: 3847 },
+    { model: "hydra/money-saver", input: ["hello"], reasoning: "medium" },
+    {
+      fetchImpl: async (url, options) => {
+        request = { url, body: JSON.parse(options.body) };
+        return new Response(JSON.stringify({ target: "gpt-5.6-sol", fallback: false }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      },
+      logger: { log(value) { logs.push(value); } },
+    },
+  );
+  assert.equal(request.url, "http://127.0.0.1:3847/hydra/route");
+  assert.equal(request.body.model, "hydra/money-saver");
+  assert.equal(request.body.input[0].content[0].text, "hello");
+  assert.deepEqual(logs, ["gpt-5.6-sol"]);
+  assert.equal(result.target, "gpt-5.6-sol");
+});
+
+test("renders Codex JSON session events and returns their thread id", () => {
+  const chunks = [];
+  const output = { write(chunk) { chunks.push(chunk); } };
+  assert.equal(parseCodexJsonEvent({ type: "thread.started", thread_id: "thread-1" }, output), "thread-1");
+  parseCodexJsonEvent({ type: "item.completed", item: { type: "agent_message", text: "hello" } }, output);
+  assert.equal(chunks.join(""), "hello\n");
 });
 
 test("serve status items match the menubar dropdown content", () => {

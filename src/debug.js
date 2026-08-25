@@ -121,6 +121,14 @@ export function debugLogCancellation({ enabled, req, route, stage }) {
   writeDebugLine("hydra-cancelled", payload);
 }
 
+export function debugLogSynthetic({ enabled, event, payload }) {
+  if (!enabled) return;
+  writeDebugLine(`hydra-synthetic-${event}`, {
+    at: new Date().toISOString(),
+    ...payload,
+  });
+}
+
 export function configureDebugLog(filePath) {
   globalThis.__HYDRA_DEBUG_LOG_PATH = filePath;
 }
