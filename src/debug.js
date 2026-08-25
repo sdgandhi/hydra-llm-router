@@ -1,6 +1,7 @@
 import { appendFileSync } from "node:fs";
 
-const SENSITIVE_HEADER_RE = /authorization|cookie|token|key|secret|session|csrf|jwt|credential/i;
+const SENSITIVE_HEADER_RE =
+  /authorization|cookie|token|key|secret|session|csrf|jwt|credential|account|x-codex-(?:turn-metadata|window-id)/i;
 const INTERESTING_HEADER_RE =
   /authorization|cookie|token|key|secret|session|csrf|jwt|credential|openai|chatgpt|codex|organization|project|account|user-agent|content-type|content-length|content-encoding|transfer-encoding|accept|upgrade|websocket/i;
 

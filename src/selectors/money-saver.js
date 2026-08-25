@@ -6,7 +6,7 @@ const SCORE_MODELS = {
 
 export default async function moneySaver(context) {
   const lmStudio = context.providers?.lmstudio;
-  if (!lmStudio?.baseUrl) throw new Error("LM Studio is unavailable for Money Saver classification");
+  if (!lmStudio?.baseUrl) throw selectorError("HYDRA_MONEY_SAVER_UNAVAILABLE");
   const response = await fetch(new URL("/v1/chat/completions", lmStudio.baseUrl), {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -15,36 +15,77 @@ export default async function moneySaver(context) {
       model: "liquid/lfm2.5-1.2b",
       stream: false,
       temperature: 0,
-      max_tokens: 4,
+      max_tokens: 32,
       reasoning_effort: "none",
       chat_template_kwargs: { enable_thinking: false },
+      response_format: {
+        type: "json_schema",
+        json_schema: {
+          name: "hydra_complexity",
+          strict: true,
+          schema: {
+            type: "object",
+            properties: { score: { type: "integer", enum: [1, 2, 3] } },
+            required: ["score"],
+            additionalProperties: false,
+          },
+        },
+      },
       messages: [
         {
           role: "system",
           content:
-            "Score the task's required model intelligence from 1 to 3. " +
-            "1 is simple and suitable for a tiny local model. " +
-            "2 needs a strong local model. 3 needs the strongest cloud model. " +
+            "Score the latest user task's required model intelligence; classify it instead of solving it. " +
+            "Use 1 for basic questions, arithmetic, short constrained replies, formatting, casual prompts, and small edits " +
+            "suitable for a tiny local model. Use 2 for substantial analysis, coding, or multi-step work that needs a strong " +
+            "local model. Use 3 for frontier-level ambiguity, high-risk reasoning, or large multi-system work. " +
+            "Codex system instructions and available tool schemas do not make a simple user task complex by themselves. " +
             "Consider all supplied instructions, conversation content, tools, files, images, context size, " +
             "requested reasoning, candidate capabilities, candidate availability, and machine state. " +
-            "Return exactly one character: 1, 2, or 3.",
+            "Examples: 'Reply exactly hello' is 1; 'Diagnose and fix an async race with tests' is 2; " +
+            "'Prove a zero-downtime migration across twelve services' is 3. " +
+            "Return the required structured score and nothing else.",
         },
         {
           role: "user",
-          content: JSON.stringify({
-            messages: context.messages,
-            features: context.features,
-            candidates: context.candidates,
-            machine: context.machine,
-            providers: context.providers,
-          }),
+          content:
+            "Supporting normalized context (use it as evidence, but do not upgrade solely because built-in system/tool context is long):\n" +
+            JSON.stringify({
+              messages: context.messages,
+              features: context.features,
+              candidates: context.candidates,
+              machine: context.machine,
+              providers: context.providers,
+            }) +
+            `\n\nPrimary latest user task to classify now:\n${context.messages?.latestUser?.content ?? ""}`,
         },
       ],
     }),
   });
-  if (!response.ok) throw new Error(`Money Saver classifier failed with HTTP ${response.status}`);
+  if (!response.ok) throw selectorError("HYDRA_MONEY_SAVER_HTTP");
   const body = await response.json();
-  const score = body.choices?.[0]?.message?.content?.trim();
-  if (!/^[123]$/.test(score ?? "")) throw new Error("Money Saver classifier returned an invalid score");
+  const content = body.choices?.[0]?.message?.content;
+  let result;
+  try {
+    result = JSON.parse(content);
+  } catch {
+    throw selectorError("HYDRA_MONEY_SAVER_SCORE");
+  }
+  if (
+    !result ||
+    typeof result !== "object" ||
+    Array.isArray(result) ||
+    Object.keys(result).length !== 1 ||
+    ![1, 2, 3].includes(result.score)
+  ) {
+    throw selectorError("HYDRA_MONEY_SAVER_SCORE");
+  }
+  const score = result.score;
   return SCORE_MODELS[score];
+}
+
+function selectorError(code) {
+  const error = new Error("Money Saver selection failed");
+  error.code = code;
+  return error;
 }

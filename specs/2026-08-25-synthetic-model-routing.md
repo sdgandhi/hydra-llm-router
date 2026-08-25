@@ -582,7 +582,7 @@ The selector itself calls LM Studio's OpenAI-compatible endpoint using `lmstudio
 The classifier request:
 
 - Disables thinking/reasoning.
-- Requests one numeric score: `1`, `2`, or `3`.
+- Requests a strict structured result containing one numeric score: `1`, `2`, or `3`.
 - Uses deterministic settings where supported.
 - Supplies the classifier with all relevant normalized request information, including the separated instruction/message categories, actual token estimate, explicit files, images, tools, requested reasoning effort, candidate capabilities/context windows/status, provider status, and machine telemetry.
 - Instructs the classifier to consider the complete request itself rather than relying on hard-coded Hydra rules for images, context, tools, coding, or reasoning.
@@ -597,7 +597,7 @@ Score mapping is fixed:
 
 Hydra adds no pre-classifier complexity heuristics. Target capability and actual-context validation still applies after the selector returns because that is a generic routing invariant, not Money Saver policy.
 
-If the classifier is unavailable, returns anything other than exactly one valid score, or the selector otherwise errors, Hydra uses `gpt-5.6-sol`.
+If the classifier is unavailable, returns anything other than exactly one valid structured score, or the selector otherwise errors, Hydra uses `gpt-5.6-sol`.
 
 ## Debug logging
 

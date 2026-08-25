@@ -1660,6 +1660,102 @@ test("locks conversation-scoped synthetic routes to the first successful model",
   }
 });
 
+test("keeps tool continuations on the selected user-turn model", async () => {
+  const tempDir = await mkdtemp(join(tmpdir(), "hydra-synthetic-tool-turn-"));
+  const routesPath = join(tempDir, "routes.json");
+  const selectorPath = join(tempDir, "selector.js");
+  const selectorSource = `export default (context) =>
+    context.messages.latestUser?.content.includes("local") ? "ollama/tiny" : "gpt-test";\n`;
+  await writeFile(selectorPath, selectorSource);
+  await writeFile(
+    routesPath,
+    JSON.stringify({
+      "ollama/tiny": {
+        provider: "ollama",
+        upstreamModel: "tiny",
+        capabilities: { tools: true, vision: false, thinking: false },
+        contextWindow: 4096,
+      },
+      "gpt-test": {
+        provider: "openai",
+        upstreamModel: "gpt-test",
+        capabilities: { tools: true, vision: true, thinking: true },
+        contextWindow: 100000,
+      },
+      "hydra/turns": {
+        provider: "synthetic",
+        definition: {
+          slug: "hydra/turns",
+          selectorPath,
+          selectorHash: createHash("sha256").update(selectorSource).digest("hex"),
+          candidates: ["ollama/tiny"],
+          fallbackModel: "gpt-test",
+          effectiveCandidates: ["ollama/tiny", "gpt-test"],
+          routingScope: "user_turn",
+          stickyToolContinuations: true,
+          selectorTimeoutMs: 1000,
+          retryCount: 0,
+          retryDelayMs: 0,
+        },
+      },
+    }),
+  );
+  const originalFetch = globalThis.fetch;
+  const targets = [];
+  let hydra;
+  globalThis.fetch = async (url) => {
+    if (String(url).endsWith("/api/chat")) {
+      targets.push("ollama/tiny");
+      return new Response(JSON.stringify({ message: { content: "local" } }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    targets.push("gpt-test");
+    return new Response(JSON.stringify({ id: "resp_cloud", status: "completed", output: [] }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  };
+  try {
+    const handler = createHydraHandler({
+      paths: { routesPath },
+      ollamaBaseUrl: "http://127.0.0.1:11434",
+      lmStudioBaseUrl: "http://127.0.0.1:11239",
+      openaiBaseUrl: "https://chatgpt.com/backend-api/codex",
+      syntheticContextOptions: syntheticContextFixture(),
+    });
+    hydra = createHttpServer(handler);
+    hydra.listen(0, "127.0.0.1");
+    await once(hydra, "listening");
+    const endpoint = `http://127.0.0.1:${hydra.address().port}/responses`;
+    const request = (input) => originalFetch(endpoint, {
+      method: "POST",
+      headers: { "content-type": "application/json", "session-id": "tool-session" },
+      body: JSON.stringify({ model: "hydra/turns", input, stream: false }),
+    });
+
+    let response = await request("use local");
+    assert.equal(response.status, 200);
+    await response.text();
+    response = await request([{ type: "function_call_output", call_id: "call-1", output: "tool result" }]);
+    assert.equal(response.status, 200);
+    await response.text();
+    response = await request("use cloud now");
+    assert.equal(response.status, 200);
+    await response.text();
+
+    assert.deepEqual(targets, ["ollama/tiny", "ollama/tiny", "gpt-test"]);
+  } finally {
+    if (hydra?.listening) {
+      hydra.close();
+      await Promise.allSettled([once(hydra, "close")]);
+    }
+    globalThis.fetch = originalFetch;
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
 function restoreEnv(key, value) {
   if (value === undefined) delete process.env[key];
   else process.env[key] = value;

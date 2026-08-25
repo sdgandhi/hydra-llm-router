@@ -1817,7 +1817,7 @@ function syntheticSessionKey(req, definition) {
 }
 
 function requestSource(req) {
-  return /codex[_\s-]?cli/i.test(String(req.headers["user-agent"] ?? "")) ? "cli" : "codex";
+  return /codex(?:[_\s-]?(?:cli|exec))/i.test(String(req.headers["user-agent"] ?? "")) ? "cli" : "codex";
 }
 
 function delayWithSignal(ms, signal) {

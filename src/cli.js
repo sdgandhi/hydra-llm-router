@@ -418,13 +418,13 @@ export async function runPromptCommand(config, options) {
     "--ephemeral",
     "--sandbox",
     "read-only",
-    "--ask-for-approval",
-    "never",
+    "-c",
+    'approval_policy="never"',
     ...codexConfigArgs(config, options),
   ];
   if (options.json) args.push("--json");
   args.push(prompt || "Describe the attached image.");
-  return spawnAndWait(codexBin, args, { cwd: process.cwd(), stdio: "inherit" });
+  return spawnAndWait(codexBin, args, { cwd: process.cwd(), stdio: ["ignore", "inherit", "inherit"] });
 }
 
 export function parseCodexJsonEvent(event, output = process.stdout) {
@@ -490,6 +490,8 @@ export async function runSessionCommand(config, options) {
     const configArgs = [
       "--ignore-user-config",
       "--skip-git-repo-check",
+      "-c",
+      'approval_policy="never"',
       ...codexConfigArgs(config, options),
       "--json",
     ];
@@ -499,8 +501,6 @@ export async function runSessionCommand(config, options) {
           "exec",
           "--sandbox",
           "read-only",
-          "--ask-for-approval",
-          "never",
           ...configArgs,
           text,
         ];
