@@ -8,12 +8,12 @@ export function shouldStartMenuBar({ platform = process.platform, noMenuBar = fa
   return platform === "darwin" && !noMenuBar;
 }
 
-export function startMenuBar(config, { onQuit, spawnImpl = spawn } = {}) {
+export function startMenuBar(config, { onQuit, onRefresh, onOpenConfig, spawnImpl = spawn } = {}) {
   if (!shouldStartMenuBar({ noMenuBar: config.noMenuBar })) return null;
 
   const helperPath = path.join(path.dirname(fileURLToPath(import.meta.url)), "menubar.swift");
   const child = spawnImpl("/usr/bin/swift", [helperPath, JSON.stringify(menuBarPayload(config))], {
-    stdio: ["ignore", "pipe", "pipe"],
+    stdio: ["pipe", "pipe", "pipe"],
   });
 
   let stdoutBuffer = "";
@@ -24,7 +24,7 @@ export function startMenuBar(config, { onQuit, spawnImpl = spawn } = {}) {
     stdoutBuffer = lines.pop() ?? "";
     for (const line of lines) {
       if (!line.trim()) continue;
-      handleHelperLine(line, onQuit);
+      handleHelperLine(line, { onQuit, onRefresh, onOpenConfig });
     }
   });
 
@@ -40,6 +40,11 @@ export function startMenuBar(config, { onQuit, spawnImpl = spawn } = {}) {
   });
 
   return {
+    update(nextConfig) {
+      if (!child.killed && child.stdin.writable) {
+        child.stdin.write(`${JSON.stringify({ type: "update", info: menuBarPayload(nextConfig) })}\n`);
+      }
+    },
     stop() {
       if (!child.killed) child.kill("SIGTERM");
     },
@@ -58,6 +63,7 @@ export function menuBarStatusItems(config) {
         ? modelTitles.map((title) => ({ kind: "info", title }))
         : [{ kind: "info", title: "No models detected" }],
     },
+    syntheticModelsMenu(config),
     { kind: "separator" },
     { kind: "info", title: `Router: http://127.0.0.1:${config.port}` },
     { kind: "info", title: `Cloud: ${config.openaiBaseUrl}` },
@@ -70,8 +76,39 @@ export function menuBarStatusItems(config) {
   items.push(
     { kind: "info", title: config.debugAuth ? `Debug log: ${config.paths.logPath}` : "Debug logging: off" },
     { kind: "info", title: `Codex config: ${config.paths.codexConfigPath}` },
+    { kind: "separator" },
+    { kind: "action", id: "refresh", title: "Refresh" },
+    { kind: "action", id: "open_config", title: "Open Hydra Config" },
   );
   return items;
+}
+
+function syntheticModelsMenu(config) {
+  const definitions = config.syntheticConfig?.definitions ?? [];
+  const lastSelections = config.syntheticState?.lastSelections;
+  const children = definitions.map((definition) => {
+    const last = lastSelections?.get?.(definition.slug);
+    return {
+      kind: "submenu",
+      title: definition.slug,
+      items: [
+        { kind: "info", title: definition.displayName },
+        { kind: "info", title: `Selector: ${definition.selector}` },
+        { kind: "info", title: `Candidates: ${definition.candidates.join(", ")}` },
+        { kind: "info", title: `Fallback: ${definition.fallbackModel}` },
+        { kind: "info", title: `Scope: ${definition.routingScope}` },
+        { kind: "info", title: `Sticky tools: ${definition.stickyToolContinuations ? "on" : "off"}` },
+        { kind: "info", title: `Timeout: ${definition.selectorTimeoutMs || "off"}` },
+        { kind: "info", title: `Retries: ${definition.retryCount} × ${definition.retryDelayMs}ms` },
+        { kind: "info", title: last ? `Last: ${last.ultimate}` : "Last: none" },
+      ],
+    };
+  });
+  return {
+    kind: "submenu",
+    title: `Synthetic Models (${definitions.length})`,
+    items: children.length ? children : [{ kind: "info", title: "No synthetic models" }],
+  };
 }
 
 function emulatedToolsLabel(statuses) {
@@ -93,7 +130,7 @@ function appToolsLabel(status) {
   return `${servers}: ${status.status}${detail}`;
 }
 
-function handleHelperLine(line, onQuit) {
+function handleHelperLine(line, { onQuit, onRefresh, onOpenConfig }) {
   let message;
   try {
     message = JSON.parse(line);
@@ -101,6 +138,8 @@ function handleHelperLine(line, onQuit) {
     return;
   }
   if (message?.type === "quit") onQuit?.();
+  if (message?.type === "action" && message.id === "refresh") onRefresh?.();
+  if (message?.type === "action" && message.id === "open_config") onOpenConfig?.();
 }
 
 function menuBarPayload(config) {

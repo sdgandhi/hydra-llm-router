@@ -2,7 +2,7 @@ import AppKit
 import Foundation
 
 final class HydraMenuDelegate: NSObject, NSApplicationDelegate {
-  private let info: [String: Any]
+  private var info: [String: Any]
   private var statusItem: NSStatusItem?
 
   init(info: [String: Any]) {
@@ -15,6 +15,13 @@ final class HydraMenuDelegate: NSObject, NSApplicationDelegate {
     let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
     configureStatusButton(item.button)
 
+    item.menu = buildMenu()
+    statusItem = item
+    listenForUpdates()
+    emit(["type": "ready"])
+  }
+
+  private func buildMenu() -> NSMenu {
     let menu = NSMenu()
     for statusItem in statusItems() {
       addStatusItem(statusItem, to: menu)
@@ -24,15 +31,17 @@ final class HydraMenuDelegate: NSObject, NSApplicationDelegate {
     let quit = NSMenuItem(title: "Quit Hydra", action: #selector(quitHydra), keyEquivalent: "q")
     quit.target = self
     menu.addItem(quit)
-
-    item.menu = menu
-    statusItem = item
-    emit(["type": "ready"])
+    return menu
   }
 
   @objc private func quitHydra() {
     emit(["type": "quit"])
     NSApp.terminate(nil)
+  }
+
+  @objc private func performMenuAction(_ sender: NSMenuItem) {
+    guard let id = sender.representedObject as? String else { return }
+    emit(["type": "action", "id": id])
   }
 
   private func addDisabled(_ title: String, to menu: NSMenu) {
@@ -59,6 +68,11 @@ final class HydraMenuDelegate: NSObject, NSApplicationDelegate {
       }
       submenuItem.submenu = submenu
       menu.addItem(submenuItem)
+    case "action":
+      let item = NSMenuItem(title: title, action: #selector(performMenuAction(_:)), keyEquivalent: "")
+      item.target = self
+      item.representedObject = statusItem["id"] as? String ?? ""
+      menu.addItem(item)
     default:
       addDisabled(title, to: menu)
     }
@@ -100,6 +114,23 @@ final class HydraMenuDelegate: NSObject, NSApplicationDelegate {
 
     print(line)
     fflush(stdout)
+  }
+
+  private func listenForUpdates() {
+    DispatchQueue.global(qos: .utility).async { [weak self] in
+      while let line = readLine() {
+        guard
+          let data = line.data(using: .utf8),
+          let message = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+          message["type"] as? String == "update",
+          let nextInfo = message["info"] as? [String: Any]
+        else { continue }
+        DispatchQueue.main.async {
+          self?.info = nextInfo
+          self?.statusItem?.menu = self?.buildMenu()
+        }
+      }
+    }
   }
 }
 

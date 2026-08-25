@@ -125,6 +125,11 @@ test("serve status items match the menubar dropdown content", () => {
           { kind: "info", title: "ollama/llama3.2:latest" },
         ],
       },
+      {
+        kind: "submenu",
+        title: "Synthetic Models (0)",
+        items: [{ kind: "info", title: "No synthetic models" }],
+      },
       { kind: "separator" },
       { kind: "info", title: "Router: http://127.0.0.1:3847" },
       { kind: "info", title: "Cloud: https://chatgpt.com/backend-api/codex" },
@@ -137,8 +142,46 @@ test("serve status items match the menubar dropdown content", () => {
       { kind: "info", title: "App tools: codex_apps: 196 ready" },
       { kind: "info", title: "Debug log: /tmp/hydra.log" },
       { kind: "info", title: "Codex config: /tmp/config.toml" },
+      { kind: "separator" },
+      { kind: "action", id: "refresh", title: "Refresh" },
+      { kind: "action", id: "open_config", title: "Open Hydra Config" },
     ],
   );
+});
+
+test("menubar shows synthetic config and last target", () => {
+  const lastSelections = new Map([
+    ["hydra/smart", { selected: "ollama/tiny", ultimate: "gpt-test" }],
+  ]);
+  const items = menuBarStatusItems({
+    port: 3847,
+    openaiBaseUrl: "cloud",
+    ollamaBaseUrl: "ollama",
+    lmStudioBaseUrl: "lmstudio",
+    debugAuth: false,
+    catalog: { models: [] },
+    syntheticConfig: {
+      definitions: [
+        {
+          slug: "hydra/smart",
+          displayName: "Hydra: Smart",
+          selector: "selectors/smart.js",
+          candidates: ["ollama/tiny"],
+          fallbackModel: "gpt-test",
+          routingScope: "user_turn",
+          stickyToolContinuations: true,
+          selectorTimeoutMs: 0,
+          retryCount: 2,
+          retryDelayMs: 1000,
+        },
+      ],
+    },
+    syntheticState: { lastSelections },
+    paths: { logPath: "/tmp/log", codexConfigPath: "/tmp/codex", hydraConfigPath: "/tmp/hydra/config.toml" },
+  });
+  const synthetic = items.find((item) => item.title === "Synthetic Models (1)");
+  assert.equal(synthetic.items[0].title, "hydra/smart");
+  assert.equal(synthetic.items[0].items.at(-1).title, "Last: gpt-test");
 });
 
 test("menu quit restores config, closes the server, removes pid, and stops helper", async () => {

@@ -148,6 +148,7 @@ export async function main() {
   if (parsed.command === "refresh") {
     const result = await refreshCatalog(config);
     console.log(`Wrote ${result.catalog.models.length} models to ${config.paths.catalogPath}`);
+    await notifyRunningHydra(config);
     return;
   }
 
@@ -203,6 +204,12 @@ export async function main() {
   }
 
   config.syntheticConfig = await loadSyntheticConfig(config.paths);
+  let menuBar = null;
+  const reloadRuntimeView = async () => {
+    config.catalog = await loadCatalog(config.paths);
+    config.syntheticConfig = await loadSyntheticConfig(config.paths);
+    menuBar?.update(config);
+  };
 
   const appServerBridge = createAppServerBridge({
     enabled: config.appTools !== "off",
@@ -218,7 +225,10 @@ export async function main() {
     apiKey: process.env.OPENAI_API_KEY,
     debugAuth: config.debugAuth,
     appServerBridge,
+    onSyntheticSelection: () => menuBar?.update(config),
+    onReload: reloadRuntimeView,
   });
+  config.syntheticState = handler.syntheticState;
   config.emulatedToolStatuses = await emulatedToolStatuses();
   config.appToolStatus = await appServerBridge.status();
 
@@ -235,7 +245,6 @@ export async function main() {
   config.catalog = await loadCatalog(config.paths);
 
   const server = createServer(handler);
-  let menuBar = null;
   let shuttingDown = false;
 
   const shutdown = async ({ signal, restoreOnQuit = false }) => {
@@ -281,6 +290,20 @@ export async function main() {
 
   menuBar = startMenuBar(config, {
     onQuit: () => shutdown({ signal: "menubar", restoreOnQuit: true }),
+    onRefresh: async () => {
+      try {
+        await refreshCatalog(config);
+        handler.syntheticState.clear();
+        await reloadRuntimeView();
+        console.log("Hydra catalog refreshed");
+      } catch (error) {
+        console.error(`Hydra refresh failed: ${error.message}`);
+      }
+    },
+    onOpenConfig: () => {
+      const child = spawn("/usr/bin/open", [config.paths.hydraConfigPath], { stdio: "ignore" });
+      child.unref();
+    },
   });
 
   await writePidFile(config.paths, process.pid);
@@ -304,6 +327,14 @@ export async function main() {
         },
       });
     }
+  }
+}
+
+async function notifyRunningHydra(config) {
+  try {
+    await fetch(`http://127.0.0.1:${config.port}/hydra/reload`, { method: "POST" });
+  } catch {
+    // Refresh is also valid while the server is stopped.
   }
 }
 

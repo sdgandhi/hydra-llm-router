@@ -1947,6 +1947,7 @@ async function handleSyntheticRequest({
   source = "codex",
   inspectOnly = false,
   syntheticContextOptions = {},
+  onSyntheticSelection,
 }) {
   const definition = syntheticRoute.definition;
   const sessionKey = syntheticSessionKey(req, definition);
@@ -2087,6 +2088,7 @@ async function handleSyntheticRequest({
     fallback: ultimate.targetSlug !== selectedSlug || selectionFallback,
     at: new Date().toISOString(),
   });
+  onSyntheticSelection?.(state.lastSelections.get(definition.slug));
   debugLogSynthetic({
     enabled: debugAuth,
     event: "completed",
@@ -2135,6 +2137,8 @@ export function createHydraHandler({
   debugAuth = false,
   appServerBridge = null,
   syntheticContextOptions = {},
+  onSyntheticSelection,
+  onReload,
 }) {
   const syntheticState = {
     conversations: new Map(),
@@ -2168,6 +2172,13 @@ export function createHydraHandler({
           },
           debugAuth,
         );
+        return;
+      }
+
+      if (req.method === "POST" && req.url === "/hydra/reload") {
+        syntheticState.clear();
+        await onReload?.();
+        jsonResponse(req, res, 200, { ok: true }, debugAuth);
         return;
       }
 
@@ -2265,6 +2276,7 @@ export function createHydraHandler({
           appServerBridge,
           syntheticContextOptions,
           source: requestSource(req),
+          onSyntheticSelection,
         });
         return;
       }
