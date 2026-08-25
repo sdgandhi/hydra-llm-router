@@ -40,7 +40,7 @@ This project is a local Codex Desktop model router. Keep changes small and valid
 
 ## Debugging Notes
 
-- Use `node src/cli.js serve --debug-auth` for live Desktop captures.
+- Use `node src/cli.js serve --debug` for live Desktop or CLI captures.
 - Logs go to `~/.codex/hydra/hydra.log`.
 - Do not log prompt text or raw bodies. Keep the current summarized body logging style.
 - Sensitive headers should stay redacted.
@@ -59,17 +59,16 @@ node --check src/cli.js
 node --check src/debug.js
 ```
 
-For live Desktop verification:
+For live CLI verification:
 
 1. `node src/cli.js install`
-2. `node src/cli.js serve --debug-auth`
-3. Open or restart Codex Desktop.
-4. Select a cloud model and send a tiny prompt.
-5. Confirm `~/.codex/hydra/hydra.log` shows upstream `status: 200` against `https://chatgpt.com/backend-api/codex/responses`.
-6. Select an `ollama/...` model and confirm it routes to Ollama.
-7. Select an `lmstudio/...` model and confirm it routes to LM Studio's `/v1/chat/completions` endpoint.
-8. If app tools are enabled, select a tool-capable Ollama model and verify an app-server tool call; verify `--app-tools off` disables the bridge.
-9. Restart without debug logging for normal use.
+2. `node src/cli.js serve --debug`
+3. Use `node src/cli.js prompt --model <slug> --input <text>` for cloud, Ollama, and LM Studio smoke tests.
+4. Use repeated `--input` values with `node src/cli.js session` for full multi-turn verification.
+5. Use `node src/cli.js route --model hydra/money-saver --input <text>` to exercise selection without generation.
+6. Confirm `~/.codex/hydra/hydra.log` shows upstream `status: 200` and the expected provider endpoint.
+7. If app tools are enabled, select a tool-capable local model and verify an app-server tool call; verify `--app-tools off` disables the bridge.
+8. Restart without debug logging for normal use.
 
 ## Change Delivery
 

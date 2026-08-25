@@ -1,15 +1,15 @@
 # Synthetic Model Routing
 
 - Date: 2026-08-25
-- Status: Approved for implementation after the server-state compatibility gate in this document
+- Status: Implemented and verified through the authenticated Codex CLI
 - Scope: Hydra-owned synthetic catalog models and the bundled Money Saver preset
-- Non-code deliverable: This document specifies behavior; it does not implement it
+- Implementation commits: `6ad0d85`, `c5b69df`, `90368fe`, and `39f1934`
 
 ## Summary
 
-Hydra will support synthetic models: stable model entries owned by Hydra whose JavaScript selector chooses one direct underlying model for each routing decision. A synthetic model appears in Codex Desktop under a `hydra/` slug, but generation is performed by an existing OpenAI, Ollama, or LM Studio route.
+Hydra supports synthetic models: stable model entries owned by Hydra whose JavaScript selector chooses one direct underlying model for each routing decision. A synthetic model appears in Codex Desktop under a `hydra/` slug, but generation is performed by an existing OpenAI, Ollama, or LM Studio route.
 
-The first bundled synthetic model will be `hydra/money-saver`. It will use a small LM Studio model to assign the request a complexity score from 1 through 3, then route generation as follows:
+The first bundled synthetic model is `hydra/money-saver`. It uses a small LM Studio model to assign the request a complexity score from 1 through 3, then routes generation as follows:
 
 | Score | Generation model |
 | --- | --- |
@@ -18,6 +18,20 @@ The first bundled synthetic model will be `hydra/money-saver`. It will use a sma
 | 3 | `gpt-5.6-sol` |
 
 `gpt-5.6-sol` is also the Money Saver fallback.
+
+### Implementation and compatibility record
+
+Implementation was completed on 2026-08-25 and verified through an isolated Hydra server on port 3857 using a temporary Codex home. The real Codex configuration was not modified during the test. The live checks covered:
+
+- Authenticated Codex CLI generation through `hydra/money-saver`.
+- Direct authenticated cloud generation through `gpt-5.6-sol`.
+- Direct LM Studio generation through `lmstudio/liquid/lfm2.5-1.2b`.
+- Direct Ollama generation through `ollama/qwen3.5:0.8b`.
+- Real Money Saver classifier decisions for known score-1, score-2, and score-3 fixtures, mapping to the three required targets.
+- A resumed two-turn synthetic session that retained and recalled conversation content.
+- Metadata-only debug logging with CLI source attribution and sensitive Codex account, session, turn, and window headers redacted.
+
+The two resumed-session requests did not contain `previous_response_id` or another Responses state reference. The second request carried the complete conversation in its `input` array, which grew from five to eight items, and the local target answered correctly. Direct cloud and synthetic/local requests also completed without a state reference. Based on this observed protocol, Hydra does not add server-state-specific model locking: Codex CLI correctness uses the supplied full history, while ordinary `session-id` routing locks remain available through `routing_scope = "conversation"`. If a future Codex protocol begins sending correctness-critical response-state references, this decision must be retested.
 
 Synthetic models are configured in one Hydra-owned TOML file and point to arbitrary JavaScript modules. Selector code is trusted, unsandboxed local code. It may use Node.js, the filesystem, environment, network, subprocesses, dependencies, or any other capability available to the Hydra process. This is an intentional security tradeoff and must be prominently documented.
 
@@ -647,7 +661,7 @@ The log must never include:
 - Authorization values, cookies, account identifiers, or session identifiers.
 - Local generated output.
 
-The Money Saver classifier's raw numeric output is still local model output and must not be logged. The selected target captures the useful routing outcome without recording classifier output. Selector-provided error messages and stack traces must also be sanitized so a selector cannot accidentally place prompt text in the log.
+The Money Saver classifier's structured score is still local model output and must not be logged. The selected target captures the useful routing outcome without recording classifier output. Selector-provided error messages and stack traces must also be sanitized so a selector cannot accidentally place prompt text in the log.
 
 ## Menu bar
 
@@ -679,7 +693,7 @@ Last selection is memory-only and resets on restart or refresh. Models omitted b
 The command is:
 
 ```text
-hydra route <synthetic-model> [options]
+hydra route --model <synthetic-model> [options]
 ```
 
 It invokes the running Hydra server and performs a real routing decision without performing the final generation. For Money Saver, this means the selector really calls its LM Studio classifier. The command prints the validated target slug, or the configured fallback if selection fails and fallback validation succeeds. Otherwise it exits nonzero with a non-content error.
@@ -792,20 +806,18 @@ Verify:
 - Open Config targets the Hydra-owned TOML path.
 - `hydra route` invokes the running server, accepts supported inputs, prints only the target, performs no final generation, and does not mutate session state.
 
-### Live Desktop verification
+### Live CLI verification (completed 2026-08-25)
 
-In addition to Hydra's existing cloud, Ollama, and LM Studio checks:
+The implementation was verified without relying on Codex Desktop UI state:
 
-1. Complete and record the server-state compatibility experiment.
-2. Install the Money Saver preset and refresh the catalog.
-3. Confirm `hydra/money-saver` appears without exposing its current target in the model selector.
-4. Route known score-1, score-2, and score-3 classifier fixtures.
-5. Confirm generation uses the corresponding provider adapter.
-6. Verify user-turn reselection and conversation locking in separate synthetic definitions.
-7. Verify both tool-continuation stickiness settings.
-8. Stop a selected local provider and confirm retries followed by cloud fallback before output.
-9. Force a failure after output begins and confirm a Responses error without model switching.
-10. Confirm the menu bar and debug log show the ultimate model while Codex retains the synthetic selection.
+1. Installed into an isolated temporary Codex home and refreshed a 32-model catalog containing Money Saver.
+2. Ran known score-1, score-2, and score-3 fixtures through `hydra route`; each selected its specified target.
+3. Ran complete `hydra prompt` generations through Money Saver, direct LM Studio, direct Ollama, and direct cloud routes.
+4. Ran a two-turn `hydra session`; the resumed turn received complete history and recalled the first-turn codeword.
+5. Confirmed the live Requests bodies had no `previous_response_id`, and recorded the compatibility decision above.
+6. Confirmed CLI-originated synthetic decisions log `source = "cli"`, the ultimate target, reasoning normalization, token estimate, and provider status without prompt or model output.
+7. Confirmed unit/integration coverage for user-turn tool stickiness, conversation locking, retries, fallback, delayed commitment, post-output failure, refresh, menu state, and selector errors.
+8. Ran all 100 tests and the prescribed syntax checks successfully.
 
 ## Acceptance criteria
 

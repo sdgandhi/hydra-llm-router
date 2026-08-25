@@ -77,7 +77,7 @@ export async function refreshCatalog(config) {
     omittedSyntheticModels: syntheticConfig.omitted,
     updatedAt: new Date().toISOString(),
   });
-  return catalog;
+  return { ...catalog, syntheticConfig };
 }
 
 export async function loadHydraConfig(paths) {

@@ -97,7 +97,7 @@ if ! "$node_path" "$cli_path" install 2>&1 | tee -a "$launcher_log"; then
 fi
 
 print -r -- "Starting Hydra with debug logging..."
-nohup "$node_path" "$cli_path" serve --debug-auth --codex-bin "$codex_path" >>"$launcher_log" 2>&1 </dev/null &
+nohup "$node_path" "$cli_path" serve --debug --codex-bin "$codex_path" >>"$launcher_log" 2>&1 </dev/null &
 serve_pid=$!
 disown "$serve_pid" 2>/dev/null || true
 print -r -- "Started Hydra process $serve_pid" >>"$launcher_log"

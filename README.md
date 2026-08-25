@@ -22,6 +22,9 @@ node src/cli.js stop
 node src/cli.js restore
 node src/cli.js status
 node src/cli.js models
+node src/cli.js route --model hydra/money-saver --input "Summarize this request"
+node src/cli.js prompt --model hydra/money-saver --input "Reply with hello"
+node src/cli.js session --model hydra/money-saver --input "Remember ORCHID" --input "What did I say?"
 ```
 
 Use `--ollama-url`, `--lmstudio-url`, `--openai-base-url`, `--port`, and the app-tool flags to override the defaults for a run. The equivalent persistent environment variables are listed below.
@@ -34,7 +37,7 @@ On macOS, `serve` shows a Hydra menu bar item with runtime details. Use `Quit Hy
 node src/cli.js serve --no-menubar
 ```
 
-The menu bar and `models` command both show the detected catalog entries Hydra has written. Local providers are queried during `refresh` or `install`; a provider that is offline or advertises no chat models contributes no catalog entries.
+The menu bar and `models` command both show the detected catalog entries Hydra has written. The menu has a nested `Synthetic Models` view with each model's selector, candidates, fallback, routing scope, retry settings, and last in-memory target. Its `Refresh` action reloads configuration and clears routing locks; `Open Hydra Config` opens the synthetic-model TOML file. Local providers are queried during `refresh` or `install`; a provider that is offline or advertises no chat models contributes no direct catalog entries.
 
 You can also double-click `Hydra.command` from Finder. It runs `install`, starts `serve` in the background, writes launcher output to `~/.codex/hydra/launcher.log`, and hides Terminal after startup.
 
@@ -66,6 +69,95 @@ lmstudio/qwen/qwen3.6-27b
 ```
 
 The prefix avoids name collisions and lets Hydra choose the correct upstream deterministically.
+
+## Synthetic Models
+
+Synthetic models are stable `hydra/` catalog entries whose JavaScript selector chooses one direct OpenAI, Ollama, or LM Studio model for a request. The selector returns only the target model slug; Hydra then performs exactly one user-visible generation through the existing provider adapter. Synthetic models cannot select other synthetic models.
+
+`install` creates the bundled `hydra/money-saver` preset without overwriting an existing config or selector. Money Saver calls LM Studio's `liquid/lfm2.5-1.2b` with thinking disabled to classify the task using a strict score:
+
+| Score | Generation model |
+| --- | --- |
+| 1 | `lmstudio/liquid/lfm2.5-1.2b` |
+| 2 | `lmstudio/google/gemma-4-26b-a4b-qat` |
+| 3 | `gpt-5.6-sol` |
+
+Its concrete fallback is `gpt-5.6-sol`.
+
+Synthetic definitions live only in `~/.codex/hydra/config.toml`:
+
+```toml
+[synthetic_models.money-saver]
+display_name = "Hydra: Money Saver"
+description = "Routes requests by estimated task complexity."
+selector = "selectors/money-saver.js"
+candidates = [
+  "lmstudio/liquid/lfm2.5-1.2b",
+  "lmstudio/google/gemma-4-26b-a4b-qat",
+]
+fallback_model = "gpt-5.6-sol"
+routing_scope = "user_turn"
+sticky_tool_continuations = true
+selector_timeout_ms = 0
+retry_count = 2
+retry_delay_ms = 1000
+```
+
+Selector paths resolve relative to this TOML file. The module must default-export a synchronous or asynchronous function:
+
+```js
+export default async function select(context) {
+  return "gpt-5.6-sol";
+}
+```
+
+The context contains the raw decoded Responses request, separated system/developer/history/latest-user/tool-call/tool-result data, conservative token and file/image/tool counts, requested reasoning effort, candidate capabilities and context windows, live provider/model status, machine telemetry, request source, and a cancellation signal. The selector must return one direct slug from its candidate allowlist or the concrete fallback, which is implicitly allowlisted. Any other value is a selector error.
+
+> **Security warning:** selector modules are trusted, unsandboxed JavaScript. They have the Hydra process's access to files, environment variables, credentials, network, dependencies, and subprocesses. A worker thread keeps selector work off the request loop; it is not a security boundary. Only install selector code you trust.
+
+`routing_scope = "user_turn"` evaluates the selector for each user turn. With `sticky_tool_continuations = true`, tool-result continuations reuse that turn's exact target and effective reasoning effort. `routing_scope = "conversation"` instead locks requests sharing a `session-id` to the first successful target. Locks are memory-only and clear on restart or refresh.
+
+Hydra validates target capability and actual context fit, retries only the selected target, and then uses the configured fallback for selector errors or failures before response output. It never chooses another candidate on its own. Once response bytes are emitted, Hydra never changes models.
+
+Config and selector edits require a restart or:
+
+```sh
+node src/cli.js refresh
+```
+
+Invalid TOML prevents startup/refresh. A missing selector omits only that synthetic model. Temporarily unavailable candidates remain configured so the selector can see their live status and normal retry/fallback behavior applies.
+
+### CLI routing and end-to-end testing
+
+`route` invokes the running server and performs a real selector decision without final generation:
+
+```sh
+node src/cli.js route \
+  --model hydra/money-saver \
+  --input "Analyze this TypeScript race condition" \
+  --reasoning medium
+```
+
+`prompt` runs one complete authenticated Codex CLI generation through Hydra in a read-only, no-approval execution:
+
+```sh
+node src/cli.js prompt \
+  --model hydra/money-saver \
+  --input "Reply exactly HYDRA_OK" \
+  --reasoning low
+```
+
+`session` starts or resumes a multi-turn Codex CLI session. Repeat `--input` for scripted turns, pass `--session-id` to resume a reported session later, or omit inputs to use the interactive prompt:
+
+```sh
+node src/cli.js session \
+  --model hydra/money-saver \
+  --input "Remember ORCHID-731" \
+  --input "What codeword did I give you?" \
+  --reasoning low
+```
+
+All three commands also support text `--file` inputs and `--image` attachments. `--input`, `--file`, and `--image` are repeatable; prompt text can also come from standard input.
 
 ## Responses Reasoning and Streaming
 
@@ -151,16 +243,18 @@ Key files:
 - `hydra-models.json`: merged Codex + Ollama + LM Studio model catalog
 - `routes.json`: model slug to upstream route table
 - `settings.json`: last generated router settings
+- `config.toml`: global synthetic model definitions
+- `selectors/`: installed selector modules, including Money Saver
 - `config.backup.toml`: saved Codex config for restore
 - `hydra.pid`: running server pid
-- `hydra.log`: debug log when `--debug-auth` is enabled
+- `hydra.log`: the single debug log when `--debug` is enabled
 
 ## Debugging
 
 Run with redacted request diagnostics:
 
 ```sh
-node src/cli.js serve --debug-auth
+node src/cli.js serve --debug
 ```
 
 Stop it from another terminal:
@@ -175,7 +269,7 @@ Debug logs are written to:
 ~/.codex/hydra/hydra.log
 ```
 
-Prompt text is not logged. Request bodies are summarized by shape, model, and key names. Sensitive headers are redacted, but header names and value lengths are retained for diagnostics.
+Prompt text, normalized messages, tool arguments/results, classifier output, and generated output are not logged. Request bodies are summarized by shape, model, and key names. Sensitive headers are redacted, but header names and value lengths are retained for diagnostics. With synthetic routing, debug records include the request source, selected and ultimate targets, fallback/retry phase, reasoning normalization, context estimates, candidate/provider status, and machine telemetry.
 
 Client disconnects are logged as a distinct cancellation outcome rather than an upstream error. Cancellation logs contain routing and lifecycle metadata only, never request bodies or generated output.
 
@@ -188,7 +282,8 @@ Hydra supports the core text Responses flow for:
 - OpenAI cloud models through Codex Desktop's ChatGPT-login backend
 - Ollama local chat models through `/api/chat`
 - LM Studio local chat models through `/v1/chat/completions`
-- Codex app-server tools for local Ollama models
-- Emulated local web-search tools for Ollama models when Codex's web-search tool is available
+- Hydra-owned synthetic models configured by TOML and JavaScript selectors
+- Codex app-server tools for local Ollama and LM Studio models
+- Emulated local web-search tools when Hydra's executor is available
 
 Hydra currently rejects WebSocket upgrade attempts with `426 Upgrade Required`; Codex Desktop falls back to the HTTP `POST /responses` path.

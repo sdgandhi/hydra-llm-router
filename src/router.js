@@ -1884,7 +1884,14 @@ async function runDirectAttempts({
     debugLogSynthetic({
       enabled: debugAuth,
       event: "attempt",
-      payload: { source, syntheticModel: definition.slug, target: targetSlug, phase, attempt: attempt + 1 },
+      payload: {
+        source,
+        syntheticModel: definition.slug,
+        target: targetSlug,
+        phase,
+        attempt: attempt + 1,
+        retryDelayMs: attempt > 0 ? definition.retryDelayMs : 0,
+      },
     });
     try {
       await dispatchDirectRoute({ ...dispatchArgs, route, res: gate, signal });
@@ -1962,6 +1969,7 @@ async function handleSyntheticRequest({
   let effectiveEffort;
   let selectionFallback = false;
   let selectionError;
+  let selectorDurationMs = null;
 
   if (lock) {
     context = { features: selectorFeatures(body) };
@@ -1988,6 +1996,7 @@ async function handleSyntheticRequest({
       ...syntheticContextOptions,
     });
     signal.throwIfAborted();
+    const selectorStartedAt = performance.now();
     try {
       const result = await runSyntheticSelector({ definition, context, signal });
       const selected = validateSelectorTarget({ definition, target: result, context, routes });
@@ -2004,6 +2013,8 @@ async function handleSyntheticRequest({
       });
       selectedSlug = fallback.slug;
       effectiveEffort = effectiveReasoningEffort(fallback.route, requestedEffort);
+    } finally {
+      selectorDurationMs = Math.round((performance.now() - selectorStartedAt) * 1000) / 1000;
     }
   }
 
@@ -2015,6 +2026,10 @@ async function handleSyntheticRequest({
       syntheticModel: definition.slug,
       routingScope: definition.routingScope,
       stickyReuse: Boolean(lock),
+      selector: definition.selector,
+      selectorHash: definition.selectorHash,
+      selectorTimeoutMs: definition.selectorTimeoutMs,
+      selectorDurationMs,
       selected: selectedSlug,
       fallback: selectionFallback,
       requestedReasoningEffort: requestedEffort,

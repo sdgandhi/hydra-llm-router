@@ -129,6 +129,7 @@ export async function main() {
   }
 
   const config = buildConfig(parsed.options);
+  if (config.debugAuth) configureDebugLog(config.paths.logPath);
 
   if (parsed.command === "route") {
     await runRouteCommand(config, parsed.options);
@@ -147,6 +148,7 @@ export async function main() {
 
   if (parsed.command === "refresh") {
     const result = await refreshCatalog(config);
+    logOmittedSyntheticModels(config, result.syntheticConfig);
     console.log(`Wrote ${result.catalog.models.length} models to ${config.paths.catalogPath}`);
     await notifyRunningHydra(config);
     return;
@@ -154,6 +156,7 @@ export async function main() {
 
   if (parsed.command === "install") {
     const result = await installHydraConfig(config);
+    logOmittedSyntheticModels(config, result.syntheticConfig);
     console.log(`Backed up Codex config to ${result.backupPath}`);
     console.log(`Wrote ${result.catalog.models.length} models to ${config.paths.catalogPath}`);
     console.log(`Codex OpenAI provider routed through Hydra on http://127.0.0.1:${config.port}`);
@@ -208,6 +211,7 @@ export async function main() {
   const reloadRuntimeView = async () => {
     config.catalog = await loadCatalog(config.paths);
     config.syntheticConfig = await loadSyntheticConfig(config.paths);
+    logOmittedSyntheticModels(config, config.syntheticConfig);
     menuBar?.update(config);
   };
 
@@ -240,6 +244,7 @@ export async function main() {
       port: config.port,
       logPath: config.paths.logPath,
     });
+    logOmittedSyntheticModels(config, config.syntheticConfig);
   }
 
   config.catalog = await loadCatalog(config.paths);
@@ -335,6 +340,18 @@ async function notifyRunningHydra(config) {
     await fetch(`http://127.0.0.1:${config.port}/hydra/reload`, { method: "POST" });
   } catch {
     // Refresh is also valid while the server is stopped.
+  }
+}
+
+function logOmittedSyntheticModels(config, syntheticConfig) {
+  if (!config.debugAuth) return;
+  for (const omitted of syntheticConfig?.omitted ?? []) {
+    writeDebugLine("hydra-synthetic-omitted", {
+      at: new Date().toISOString(),
+      syntheticModel: omitted.slug,
+      selectorPath: omitted.selectorPath,
+      reason: omitted.reason,
+    });
   }
 }
 
