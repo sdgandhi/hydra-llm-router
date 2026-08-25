@@ -17,6 +17,11 @@ const LMSTUDIO_REASONING_LEVELS = {
     description: "Use a high amount of LM Studio reasoning.",
   },
 };
+const SYNTHETIC_REASONING_LEVELS = [
+  { effort: "low", description: "Use light reasoning." },
+  { effort: "medium", description: "Use medium reasoning." },
+  { effort: "high", description: "Use high reasoning." },
+];
 
 export function normalizeOllamaSlug(name) {
   return `ollama/${name}`;
@@ -41,6 +46,56 @@ function cloneWithoutNux(model) {
   delete copy.service_tiers;
   delete copy.additional_speed_tiers;
   return copy;
+}
+
+function catalogCapabilities(model) {
+  const modalities = Array.isArray(model?.input_modalities) ? model.input_modalities : ["text"];
+  return {
+    thinking:
+      model?.default_reasoning_level !== "none" ||
+      (Array.isArray(model?.supported_reasoning_levels) && model.supported_reasoning_levels.length > 0),
+    tools: model?.supports_parallel_tool_calls !== false,
+    vision: modalities.includes("image"),
+    webSearch: Boolean(model?.supports_search_tool),
+  };
+}
+
+function syntheticCapabilities(definition, routes) {
+  const candidateRoutes = definition.effectiveCandidates.map((slug) => routes[slug]);
+  const capability = (name) => candidateRoutes.every((route) => Boolean(route?.capabilities?.[name]));
+  return {
+    thinking: capability("thinking"),
+    tools: capability("tools"),
+    vision: capability("vision"),
+    webSearch: capability("webSearch"),
+  };
+}
+
+function syntheticModelFromTemplate(template, definition, priority, routes) {
+  const model = cloneWithoutNux(template);
+  const capabilities = syntheticCapabilities(definition, routes);
+  const windows = definition.effectiveCandidates
+    .map((slug) => Number(routes[slug]?.contextWindow))
+    .filter((value) => Number.isFinite(value) && value > 0);
+  const contextWindow = windows.length ? Math.max(...windows) : DEFAULT_LOCAL_CONTEXT_WINDOW;
+  model.slug = definition.slug;
+  model.display_name = definition.displayName;
+  model.description = definition.description;
+  model.visibility = "list";
+  model.supported_in_api = true;
+  model.priority = priority;
+  model.context_window = contextWindow;
+  model.max_context_window = contextWindow;
+  model.default_reasoning_level = "medium";
+  model.supported_reasoning_levels = SYNTHETIC_REASONING_LEVELS;
+  model.supports_reasoning_summaries = capabilities.thinking;
+  model.supports_search_tool = capabilities.webSearch;
+  model.input_modalities = capabilities.vision ? ["text", "image"] : ["text"];
+  model.web_search_tool_type = "text";
+  model.use_responses_lite = false;
+  model.shell_type = "shell_command";
+  model.supports_parallel_tool_calls = capabilities.tools;
+  return { model, capabilities, contextWindow };
 }
 
 function capabilitySet(modelInfo) {
@@ -243,6 +298,7 @@ export async function buildCatalog({
   lmStudioBaseUrl,
   fetchImpl,
   webSearchReady = false,
+  syntheticDefinitions = [],
 }) {
   if (!sourceCatalog?.models?.length) {
     throw new Error("Codex source catalog must contain at least one model");
@@ -274,7 +330,14 @@ export async function buildCatalog({
     lmStudioModelFromTemplate(template, model, 2000 + index, { webSearchReady }),
   );
   const routes = {};
-  for (const model of cloudModels) routes[model.slug] = { provider: "openai", upstreamModel: model.slug };
+  for (const model of cloudModels) {
+    routes[model.slug] = {
+      provider: "openai",
+      upstreamModel: model.slug,
+      capabilities: catalogCapabilities(model),
+      contextWindow: model.context_window ?? model.max_context_window,
+    };
+  }
   for (const model of ollamaModels) {
     const name = model.name || model.model;
     const modelInfo = ollamaModelInfo.get(name);
@@ -282,6 +345,7 @@ export async function buildCatalog({
       provider: "ollama",
       upstreamModel: name,
       capabilities: routeCapabilities(modelInfo, webSearchReady),
+      contextWindow: ollamaContextWindow(model, modelInfo),
     };
   }
   for (const model of lmStudioModels) {
@@ -289,6 +353,19 @@ export async function buildCatalog({
       provider: "lmstudio",
       upstreamModel: model.id,
       capabilities: lmStudioRouteCapabilities(model, webSearchReady),
+      contextWindow: lmStudioContextWindow(model),
+    };
+  }
+
+  const syntheticCatalogModels = [];
+  for (const [index, definition] of syntheticDefinitions.entries()) {
+    const synthetic = syntheticModelFromTemplate(template, definition, 3000 + index, routes);
+    syntheticCatalogModels.push(synthetic.model);
+    routes[definition.slug] = {
+      provider: "synthetic",
+      capabilities: synthetic.capabilities,
+      contextWindow: synthetic.contextWindow,
+      definition,
     };
   }
 
@@ -297,7 +374,7 @@ export async function buildCatalog({
       fetched_at: new Date().toISOString(),
       etag: `hydra-${Date.now()}`,
       client_version: sourceCatalog.client_version ?? "hydra",
-      models: [...cloudModels, ...ollamaCatalogModels, ...lmStudioCatalogModels],
+      models: [...cloudModels, ...ollamaCatalogModels, ...lmStudioCatalogModels, ...syntheticCatalogModels],
     },
     routes,
   };

@@ -1,0 +1,147 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import {
+  buildSelectorContext,
+  normalizeSelectorMessages,
+  runSyntheticSelector,
+  selectorFeatures,
+  validateSelectorTarget,
+} from "../src/synthetic.js";
+
+test("separates selector messages and overestimates request tokens", () => {
+  const body = {
+    instructions: "system rules",
+    input: [
+      { role: "developer", content: "developer rules" },
+      { role: "user", content: "older question" },
+      { role: "assistant", content: "older answer" },
+      { type: "function_call", call_id: "1", name: "tool", arguments: "{}" },
+      { type: "function_call_output", call_id: "1", output: "result" },
+      {
+        role: "user",
+        content: [
+          { type: "input_text", text: "latest question" },
+          { type: "input_image", image_url: "data:image/png;base64,AAAA" },
+          { type: "input_file", filename: "notes.txt" },
+        ],
+      },
+    ],
+    tools: [{ type: "function", name: "tool" }],
+    reasoning: { effort: "high" },
+  };
+  const messages = normalizeSelectorMessages(body);
+  const features = selectorFeatures(body, messages);
+  assert.equal(messages.system[0].content, "system rules");
+  assert.equal(messages.developer[0].content, "developer rules");
+  assert.equal(messages.latestUser.content, "latest question");
+  assert.equal(messages.toolCalls.length, 1);
+  assert.equal(messages.toolResults.length, 1);
+  assert.equal(features.imageCount, 1);
+  assert.equal(features.explicitFileCount, 1);
+  assert.equal(features.toolCount, 1);
+  assert.equal(features.requestedReasoningEffort, "high");
+  assert.ok(features.actualContextTokens > body.instructions.length / 4);
+});
+
+test("builds selector context with candidates grouped provider state", async () => {
+  const definition = definitionFixture();
+  const routes = {
+    "ollama/tiny": {
+      provider: "ollama",
+      upstreamModel: "tiny",
+      contextWindow: 4096,
+      capabilities: { tools: false, vision: false },
+    },
+    "gpt-test": {
+      provider: "openai",
+      upstreamModel: "gpt-test",
+      contextWindow: 100000,
+      capabilities: { tools: true, vision: true },
+    },
+  };
+  const context = await buildSelectorContext({
+    definition,
+    body: { model: "hydra/smart", input: "hello" },
+    routes,
+    ollamaBaseUrl: "http://127.0.0.1:11434",
+    lmStudioBaseUrl: "http://127.0.0.1:11239",
+    telemetryImpl: async () => ({ memory: {}, battery: {}, gpu: {} }),
+    providerStatusImpl: async () => ({
+      openai: { status: "unknown", models: {} },
+      ollama: { status: "available", models: { tiny: { status: "available" } } },
+      lmstudio: { status: "unavailable", models: {} },
+    }),
+  });
+  assert.equal(context.syntheticModel, "hydra/smart");
+  assert.equal(context.candidates[0].status, "available");
+  assert.equal(context.candidates[1].fallback, true);
+  assert.equal(context.providers.ollama.status, "available");
+  assert.equal(context.raw.input, "hello");
+});
+
+test("runs selectors in a worker and rejects changed selector files", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "hydra-selector-worker-"));
+  const selectorPath = path.join(dir, "selector.js");
+  await writeFile(selectorPath, 'export default async (context) => context.raw.target;\n');
+  const source = await readFile(selectorPath);
+  const definition = {
+    ...definitionFixture(),
+    selectorPath,
+    selectorHash: createHash("sha256").update(source).digest("hex"),
+    selectorTimeoutMs: 1000,
+  };
+  const result = await runSyntheticSelector({ definition, context: { raw: { target: "gpt-test" } } });
+  assert.equal(result, "gpt-test");
+
+  await writeFile(selectorPath, 'export default () => "ollama/tiny";\n');
+  await assert.rejects(runSyntheticSelector({ definition, context: { raw: {} } }), /run hydra refresh/);
+});
+
+test("times out selectors and validates target capabilities", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "hydra-selector-timeout-"));
+  const selectorPath = path.join(dir, "selector.js");
+  await writeFile(selectorPath, "export default async () => new Promise(() => {});\n");
+  const source = await readFile(selectorPath);
+  const definition = {
+    ...definitionFixture(),
+    selectorPath,
+    selectorHash: createHash("sha256").update(source).digest("hex"),
+    selectorTimeoutMs: 20,
+  };
+  await assert.rejects(runSyntheticSelector({ definition, context: {} }), /timed out/);
+
+  const context = { features: { actualContextTokens: 100, hasImages: true, toolCount: 0 } };
+  const routes = {
+    "ollama/tiny": {
+      provider: "ollama",
+      contextWindow: 4096,
+      capabilities: { vision: false, tools: false },
+    },
+  };
+  assert.throws(
+    () => validateSelectorTarget({ definition, target: "ollama/tiny", context, routes }),
+    /lacks vision/,
+  );
+  assert.throws(
+    () => validateSelectorTarget({ definition, target: "ollama/not-allowed", context, routes }),
+    /outside its allowlist/,
+  );
+});
+
+function definitionFixture() {
+  return {
+    slug: "hydra/smart",
+    candidates: ["ollama/tiny"],
+    fallbackModel: "gpt-test",
+    effectiveCandidates: ["ollama/tiny", "gpt-test"],
+    routingScope: "user_turn",
+    stickyToolContinuations: true,
+    selectorTimeoutMs: 0,
+    retryCount: 2,
+    retryDelayMs: 1000,
+  };
+}

@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import path from "node:path";
 import { buildCatalog } from "./catalog.js";
 import { emulatedToolStatuses } from "./router.js";
+import { ensureSyntheticDefaults, loadSyntheticConfig } from "./synthetic-config.js";
 
 export function expandHome(value) {
   if (!value || value === "~") return homedir();
@@ -18,6 +19,9 @@ export function defaultPaths(codexHome = process.env.CODEX_HOME ?? "~/.codex") {
     hydraDir,
     codexConfigPath: path.join(home, "config.toml"),
     codexModelCachePath: path.join(home, "models_cache.json"),
+    hydraConfigPath: path.join(hydraDir, "config.toml"),
+    selectorsDir: path.join(hydraDir, "selectors"),
+    moneySaverSelectorPath: path.join(hydraDir, "selectors", "money-saver.js"),
     catalogPath: path.join(hydraDir, "hydra-models.json"),
     routesPath: path.join(hydraDir, "routes.json"),
     backupPath: path.join(hydraDir, "config.backup.toml"),
@@ -49,6 +53,7 @@ export async function writeJsonAtomic(filePath, value) {
 
 export async function refreshCatalog(config) {
   const sourceCatalog = await readJson(config.paths.codexModelCachePath);
+  const syntheticConfig = await loadSyntheticConfig(config.paths);
   const toolStatuses = await emulatedToolStatuses();
   const catalog = await buildCatalog({
     sourceCatalog,
@@ -56,6 +61,7 @@ export async function refreshCatalog(config) {
     lmStudioBaseUrl: config.lmStudioBaseUrl,
     fetchImpl: globalThis.fetch,
     webSearchReady: toolStatuses.some((tool) => tool.name === "web_search" && tool.status === "ready"),
+    syntheticDefinitions: syntheticConfig.definitions,
   });
   await writeJsonAtomic(config.paths.catalogPath, catalog.catalog);
   await writeJsonAtomic(config.paths.routesPath, catalog.routes);
@@ -67,6 +73,8 @@ export async function refreshCatalog(config) {
     appTools: config.appTools,
     appToolServers: config.appToolServers,
     codexBin: config.codexBin,
+    syntheticModels: syntheticConfig.definitions.map(({ selectorHash, ...definition }) => definition),
+    omittedSyntheticModels: syntheticConfig.omitted,
     updatedAt: new Date().toISOString(),
   });
   return catalog;
@@ -117,6 +125,7 @@ export function removeManagedHydraConfig(toml) {
 }
 
 export async function installHydraConfig(config) {
+  await ensureSyntheticDefaults(config.paths);
   const catalog = await refreshCatalog(config);
   await mkdir(config.paths.hydraDir, { recursive: true });
   const currentConfig = await readFile(config.paths.codexConfigPath, "utf8");

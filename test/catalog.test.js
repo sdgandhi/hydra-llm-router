@@ -265,7 +265,61 @@ test("adds models advertised by LM Studio", async () => {
     provider: "lmstudio",
     upstreamModel: "qwen3-4b",
     capabilities: { thinking: true, tools: true, vision: true, webSearch: true },
+    contextWindow: 65536,
   });
+});
+
+test("adds synthetic models with conservative capabilities and maximum context", async () => {
+  const sourceCatalog = {
+    models: [
+      {
+        slug: "gpt-test",
+        display_name: "GPT Test",
+        visibility: "list",
+        context_window: 100000,
+        input_modalities: ["text", "image"],
+        supports_parallel_tool_calls: true,
+        supports_search_tool: true,
+        supported_reasoning_levels: [{ effort: "high" }],
+      },
+    ],
+  };
+  const result = await buildCatalog({
+    sourceCatalog,
+    ollamaBaseUrl: "http://127.0.0.1:11434",
+    lmStudioBaseUrl: "http://127.0.0.1:11239",
+    fetchImpl: async (url) => {
+      if (url.pathname === "/api/tags") {
+        return { ok: true, json: async () => ({ models: [{ name: "tiny", details: { context_length: 4096 } }] }) };
+      }
+      if (url.pathname === "/api/show") {
+        return { ok: true, json: async () => ({ capabilities: [] }) };
+      }
+      return { ok: true, json: async () => ({ models: [] }) };
+    },
+    syntheticDefinitions: [
+      {
+        slug: "hydra/smart",
+        displayName: "Hydra: Smart",
+        description: "Synthetic test model.",
+        candidates: ["ollama/tiny"],
+        fallbackModel: "gpt-test",
+        effectiveCandidates: ["ollama/tiny", "gpt-test"],
+      },
+    ],
+  });
+
+  const synthetic = result.catalog.models.at(-1);
+  assert.equal(synthetic.slug, "hydra/smart");
+  assert.equal(synthetic.context_window, 100000);
+  assert.deepEqual(synthetic.input_modalities, ["text"]);
+  assert.equal(synthetic.supports_parallel_tool_calls, false);
+  assert.deepEqual(
+    synthetic.supported_reasoning_levels.map(({ effort }) => effort),
+    ["low", "medium", "high"],
+  );
+  assert.equal(result.routes["hydra/smart"].provider, "synthetic");
+  assert.equal(result.routes["hydra/smart"].definition.fallbackModel, "gpt-test");
 });
 
 test("advertises LM Studio effort levels and default from native metadata", async () => {
