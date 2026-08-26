@@ -8,7 +8,7 @@ import {
   runRouteCommand,
   shutdownHydra,
 } from "../src/cli.js";
-import { menuBarStatusItems } from "../src/menubar.js";
+import { handleHelperLine, menuBarStatusItems } from "../src/menubar.js";
 
 test("parses --no-menubar as a serve flag", () => {
   assert.deepEqual(parseArgs(["serve", "--no-menubar"]), {
@@ -89,6 +89,8 @@ test("renders Codex JSON session events and returns their thread id", () => {
 test("serve status items match the menubar dropdown content", () => {
   assert.deepEqual(
     menuBarStatusItems({
+      version: "0.1.0",
+      installed: false,
       port: 3847,
       openaiBaseUrl: "https://chatgpt.com/backend-api/codex",
       ollamaBaseUrl: "http://127.0.0.1:11434",
@@ -116,6 +118,8 @@ test("serve status items match the menubar dropdown content", () => {
     }),
     [
       { kind: "info", title: "Hydra Running" },
+      { kind: "info", title: "Version: 0.1.0" },
+      { kind: "info", title: "Codex routing: not installed" },
       { kind: "separator" },
       {
         kind: "submenu",
@@ -143,6 +147,8 @@ test("serve status items match the menubar dropdown content", () => {
       { kind: "info", title: "Debug log: /tmp/hydra.log" },
       { kind: "info", title: "Codex config: /tmp/config.toml" },
       { kind: "separator" },
+      { kind: "action", id: "install", title: "Install Hydra in Codex" },
+      { kind: "action", id: "restore", title: "Restore Codex Config" },
       { kind: "action", id: "refresh", title: "Refresh" },
       { kind: "action", id: "open_config", title: "Open Hydra Config" },
     ],
@@ -182,6 +188,17 @@ test("menubar shows synthetic config and last target", () => {
   const synthetic = items.find((item) => item.title === "Synthetic Models (1)");
   assert.equal(synthetic.items[0].title, "hydra/smart");
   assert.equal(synthetic.items[0].items.at(-1).title, "Last: gpt-test");
+});
+
+test("menubar dispatches install and restore actions", () => {
+  const calls = [];
+  const handlers = {
+    onInstall: () => calls.push("install"),
+    onRestore: () => calls.push("restore"),
+  };
+  handleHelperLine('{"type":"action","id":"install"}', handlers);
+  handleHelperLine('{"type":"action","id":"restore"}', handlers);
+  assert.deepEqual(calls, ["install", "restore"]);
 });
 
 test("menu quit restores config, closes the server, removes pid, and stops helper", async () => {

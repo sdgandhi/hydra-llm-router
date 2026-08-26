@@ -1,6 +1,14 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { hydraConfigPatch, insertHydraConfig, removeManagedHydraConfig } from "../src/config.js";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import {
+  hydraConfigPatch,
+  insertHydraConfig,
+  isHydraInstalled,
+  removeManagedHydraConfig,
+} from "../src/config.js";
 
 test("removes managed hydra provider config without disturbing other sections", () => {
   const input = `model = "gpt-5.5"
@@ -72,4 +80,24 @@ trust_level = "trusted"
   assert.ok(catalogIndex > 0);
   assert.ok(catalogIndex < firstTableIndex);
   assert.doesNotMatch(output, /\[model_providers\.hydra\]/);
+});
+
+test("detects whether Codex is routed through this Hydra instance", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "hydra-config-test-"));
+  const codexConfigPath = path.join(dir, "config.toml");
+  const config = {
+    port: 3847,
+    paths: {
+      codexConfigPath,
+      catalogPath: path.join(dir, "hydra-models.json"),
+    },
+  };
+  try {
+    await writeFile(codexConfigPath, insertHydraConfig('model = "gpt-5.5"\n', config));
+    assert.equal(await isHydraInstalled(config), true);
+    await writeFile(codexConfigPath, 'model = "gpt-5.5"\n');
+    assert.equal(await isHydraInstalled(config), false);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });

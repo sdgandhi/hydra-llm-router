@@ -15,6 +15,7 @@ Keeping the provider identity as OpenAI preserves existing Codex Desktop chats a
 
 ```sh
 npm test
+npm run dmg:dev
 node src/cli.js refresh
 node src/cli.js install
 node src/cli.js serve
@@ -31,15 +32,44 @@ Use `--ollama-url`, `--lmstudio-url`, `--openai-base-url`, `--port`, and the app
 
 `install` backs up `~/.codex/config.toml`, refreshes the merged catalog, and points Codex Desktop at Hydra. `restore` writes the saved backup back.
 
-On macOS, `serve` shows a Hydra menu bar item with runtime details. Use `Quit Hydra` from that menu to restore the saved Codex config backup and stop the server. For terminal-only use:
+## macOS App
+
+Hydra is distributed as a signed macOS DMG. Open the DMG, drag `Hydra.app` to Applications, and launch it. The app runs entirely in the menu bar; it does not open a Dock window.
+
+Use `Install Hydra in Codex` to back up the current Codex configuration, refresh the model catalog, and route Codex through Hydra. Use `Restore Codex Config` to restore that backup without quitting. `Quit Hydra & Restore Codex` restores the backup and stops the router.
+
+Development builds bundle the current Node runtime, use the current package version without changing it, enable redacted debug logging, and are ad-hoc signed:
+
+```sh
+npm ci
+npm run dmg:dev
+```
+
+The output is written to `dist/Hydra-<version>-dev-<architecture>.dmg`. Because the bundled Node executable is architecture-specific, build once on each target architecture you distribute.
+
+Release builds increment the patch version in `package.json` and `package-lock.json` before creating the app and DMG. They require a Developer ID Application certificate:
+
+```sh
+HYDRA_SIGNING_IDENTITY="Developer ID Application: Your Name (TEAMID)" npm run dmg:release
+```
+
+Set `HYDRA_NOTARY_PROFILE` to an `xcrun notarytool` keychain profile to notarize and staple the release DMG as part of the same build:
+
+```sh
+HYDRA_SIGNING_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
+HYDRA_NOTARY_PROFILE="hydra-notary" \
+npm run dmg:release
+```
+
+Never use `dmg:release` for local iteration: every invocation intentionally changes the tracked version, even if a later signing or packaging step fails.
+
+For terminal-only use, `serve` can still run without a menu bar:
 
 ```sh
 node src/cli.js serve --no-menubar
 ```
 
 The menu bar and `models` command both show the detected catalog entries Hydra has written. The menu has a nested `Synthetic Models` view with each model's selector, candidates, fallback, routing scope, retry settings, and last in-memory target. Its `Refresh` action reloads configuration and clears routing locks; `Open Hydra Config` opens the synthetic-model TOML file. Local providers are queried during `refresh` or `install`; a provider that is offline or advertises no chat models contributes no direct catalog entries.
-
-You can also double-click `Hydra.command` from Finder. It runs `install`, starts `serve` in the background, writes launcher output to `~/.codex/hydra/launcher.log`, and hides Terminal after startup.
 
 After testing with debug mode, restart without debug logging:
 

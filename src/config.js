@@ -84,6 +84,19 @@ export async function loadHydraConfig(paths) {
   return readJson(paths.settingsPath, {});
 }
 
+export async function isHydraInstalled(config) {
+  try {
+    const toml = await readFile(config.paths.codexConfigPath, "utf8");
+    return (
+      toml.includes(`model_catalog_json = ${JSON.stringify(config.paths.catalogPath)}`) &&
+      toml.includes(`openai_base_url = "http://127.0.0.1:${config.port}"`)
+    );
+  } catch (error) {
+    if (error.code === "ENOENT") return false;
+    throw error;
+  }
+}
+
 export function hydraConfigPatch(config) {
   return [
     `model_catalog_json = ${JSON.stringify(config.paths.catalogPath)}`,

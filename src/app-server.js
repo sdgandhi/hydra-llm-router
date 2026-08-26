@@ -2,11 +2,12 @@ import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { delimiter, isAbsolute, join } from "node:path";
+import { hydraVersion } from "./version.js";
 
 const DEFAULT_CLIENT_INFO = {
   name: "hydra",
   title: "Hydra",
-  version: "0.1.0",
+  version: hydraVersion,
 };
 const DEFAULT_APP_TOOL_SERVERS = ["codex_apps"];
 const DEFAULT_REQUEST_TIMEOUT_MS = 30000;

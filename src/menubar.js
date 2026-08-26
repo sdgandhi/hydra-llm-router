@@ -8,11 +8,19 @@ export function shouldStartMenuBar({ platform = process.platform, noMenuBar = fa
   return platform === "darwin" && !noMenuBar;
 }
 
-export function startMenuBar(config, { onQuit, onRefresh, onOpenConfig, spawnImpl = spawn } = {}) {
+export function startMenuBar(
+  config,
+  { onQuit, onRefresh, onInstall, onRestore, onOpenConfig, spawnImpl = spawn } = {},
+) {
   if (!shouldStartMenuBar({ noMenuBar: config.noMenuBar })) return null;
 
   const helperPath = path.join(path.dirname(fileURLToPath(import.meta.url)), "menubar.swift");
-  const child = spawnImpl("/usr/bin/swift", [helperPath, JSON.stringify(menuBarPayload(config))], {
+  const helperBin = process.env.HYDRA_MENUBAR_BIN;
+  const command = helperBin || "/usr/bin/swift";
+  const args = helperBin
+    ? [JSON.stringify(menuBarPayload(config))]
+    : [helperPath, JSON.stringify(menuBarPayload(config))];
+  const child = spawnImpl(command, args, {
     stdio: ["pipe", "pipe", "pipe"],
   });
 
@@ -24,7 +32,7 @@ export function startMenuBar(config, { onQuit, onRefresh, onOpenConfig, spawnImp
     stdoutBuffer = lines.pop() ?? "";
     for (const line of lines) {
       if (!line.trim()) continue;
-      handleHelperLine(line, { onQuit, onRefresh, onOpenConfig });
+      handleHelperLine(line, { onQuit, onRefresh, onInstall, onRestore, onOpenConfig });
     }
   });
 
@@ -55,6 +63,8 @@ export function menuBarStatusItems(config) {
   const modelTitles = catalogModelTitles(config.catalog);
   const items = [
     { kind: "info", title: "Hydra Running" },
+    { kind: "info", title: `Version: ${config.version ?? "development"}` },
+    { kind: "info", title: `Codex routing: ${config.installed ? "installed" : "not installed"}` },
     { kind: "separator" },
     {
       kind: "submenu",
@@ -76,7 +86,10 @@ export function menuBarStatusItems(config) {
   items.push(
     { kind: "info", title: config.debugAuth ? `Debug log: ${config.paths.logPath}` : "Debug logging: off" },
     { kind: "info", title: `Codex config: ${config.paths.codexConfigPath}` },
+    ...(config.menuNotice ? [{ kind: "info", title: config.menuNotice }] : []),
     { kind: "separator" },
+    { kind: "action", id: "install", title: "Install Hydra in Codex" },
+    { kind: "action", id: "restore", title: "Restore Codex Config" },
     { kind: "action", id: "refresh", title: "Refresh" },
     { kind: "action", id: "open_config", title: "Open Hydra Config" },
   );
@@ -130,7 +143,7 @@ function appToolsLabel(status) {
   return `${servers}: ${status.status}${detail}`;
 }
 
-function handleHelperLine(line, { onQuit, onRefresh, onOpenConfig }) {
+export function handleHelperLine(line, { onQuit, onRefresh, onInstall, onRestore, onOpenConfig }) {
   let message;
   try {
     message = JSON.parse(line);
@@ -138,6 +151,8 @@ function handleHelperLine(line, { onQuit, onRefresh, onOpenConfig }) {
     return;
   }
   if (message?.type === "quit") onQuit?.();
+  if (message?.type === "action" && message.id === "install") onInstall?.();
+  if (message?.type === "action" && message.id === "restore") onRestore?.();
   if (message?.type === "action" && message.id === "refresh") onRefresh?.();
   if (message?.type === "action" && message.id === "open_config") onOpenConfig?.();
 }

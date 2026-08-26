@@ -7,6 +7,8 @@
     "hydra": "./src/cli.js"
   },
   "scripts": {
+    "dmg:dev": "node scripts/build-macos.js --dev",
+    "dmg:release": "node scripts/build-macos.js --release",
     "test": "node --test",
     "start": "node src/cli.js serve"
   },

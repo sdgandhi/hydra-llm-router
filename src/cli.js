@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import {
   defaultPaths,
   installHydraConfig,
+  isHydraInstalled,
   loadCatalog,
   loadHydraConfig,
   refreshCatalog,
@@ -22,6 +23,7 @@ import { configureDebugLog, writeDebugLine } from "./debug.js";
 import { menuBarStatusItems, startMenuBar } from "./menubar.js";
 import { createHydraHandler, emulatedToolStatuses } from "./router.js";
 import { loadSyntheticConfig } from "./synthetic-config.js";
+import { hydraVersion } from "./version.js";
 
 const commands = new Set(["serve", "stop", "refresh", "install", "restore", "status", "models", "route", "prompt", "session"]);
 const booleanOptions = new Set(["--debug", "--no-menubar", "--json"]);
@@ -129,6 +131,7 @@ export async function main() {
   }
 
   const config = buildConfig(parsed.options);
+  config.version = hydraVersion;
   if (config.debugAuth) configureDebugLog(config.paths.logPath);
 
   if (parsed.command === "route") {
@@ -207,6 +210,7 @@ export async function main() {
   }
 
   config.syntheticConfig = await loadSyntheticConfig(config.paths);
+  config.installed = await isHydraInstalled(config);
   let menuBar = null;
   const reloadRuntimeView = async () => {
     config.catalog = await loadCatalog(config.paths);
@@ -305,11 +309,35 @@ export async function main() {
         console.error(`Hydra refresh failed: ${error.message}`);
       }
     },
+    onInstall: () => runMenuAction("Installed Hydra in Codex", async () => {
+      await installHydraConfig(config);
+      config.installed = true;
+      await reloadRuntimeView();
+    }),
+    onRestore: () => runMenuAction("Restored Codex config", async () => {
+      await restoreConfig(config.paths);
+      config.installed = false;
+    }),
     onOpenConfig: () => {
       const child = spawn("/usr/bin/open", [config.paths.hydraConfigPath], { stdio: "ignore" });
       child.unref();
     },
   });
+
+  async function runMenuAction(successNotice, action) {
+    config.menuNotice = "Working…";
+    menuBar?.update(config);
+    try {
+      await action();
+      config.menuNotice = `Last action: ${successNotice}`;
+      menuBar?.update(config);
+      console.log(successNotice);
+    } catch (error) {
+      config.menuNotice = `Action failed: ${error.message}`;
+      menuBar?.update(config);
+      console.error(config.menuNotice);
+    }
+  }
 
   await writePidFile(config.paths, process.pid);
   server.listen(config.port, "127.0.0.1", () => {

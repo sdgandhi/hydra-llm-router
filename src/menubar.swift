@@ -28,7 +28,7 @@ final class HydraMenuDelegate: NSObject, NSApplicationDelegate {
     }
     menu.addItem(NSMenuItem.separator())
 
-    let quit = NSMenuItem(title: "Quit Hydra", action: #selector(quitHydra), keyEquivalent: "q")
+    let quit = NSMenuItem(title: "Quit Hydra & Restore Codex", action: #selector(quitHydra), keyEquivalent: "q")
     quit.target = self
     menu.addItem(quit)
     return menu
