@@ -22,7 +22,7 @@ import { createAppServerBridge, parseAppToolServers, resolveCodexBin } from "./a
 import { configureDebugLog, writeDebugLine } from "./debug.js";
 import { menuBarStatusItems, startMenuBar } from "./menubar.js";
 import { createHydraHandler, emulatedToolStatuses } from "./router.js";
-import { loadSyntheticConfig } from "./synthetic-config.js";
+import { loadSyntheticConfig, loadSyntheticConfigWithDefaults } from "./synthetic-config.js";
 import { hydraVersion } from "./version.js";
 
 const commands = new Set(["serve", "stop", "refresh", "install", "restore", "status", "models", "route", "prompt", "session"]);
@@ -209,7 +209,7 @@ export async function main() {
     return;
   }
 
-  config.syntheticConfig = await loadSyntheticConfig(config.paths);
+  config.syntheticConfig = await loadSyntheticConfigWithDefaults(config.paths);
   config.installed = await isHydraInstalled(config);
   let menuBar = null;
   const reloadRuntimeView = async () => {
@@ -318,10 +318,6 @@ export async function main() {
       await restoreConfig(config.paths);
       config.installed = false;
     }),
-    onOpenConfig: () => {
-      const child = spawn("/usr/bin/open", [config.paths.hydraConfigPath], { stdio: "ignore" });
-      child.unref();
-    },
   });
 
   async function runMenuAction(successNotice, action) {

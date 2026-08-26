@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import {
   ensureSyntheticDefaults,
+  loadSyntheticConfigWithDefaults,
   normalizeSyntheticSlug,
   parseSyntheticConfig,
 } from "../src/synthetic-config.js";
@@ -90,4 +91,16 @@ test("installs Money Saver config and selector without overwriting them", async 
   const second = await ensureSyntheticDefaults(paths);
   assert.deepEqual(second, { created: false, addedMoneySaver: false });
   assert.equal(await readFile(paths.moneySaverSelectorPath, "utf8"), selector);
+});
+
+test("first serve preparation creates and loads Money Saver", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "hydra-synthetic-serve-"));
+  const paths = {
+    hydraConfigPath: path.join(root, "config.toml"),
+    selectorsDir: path.join(root, "selectors"),
+    moneySaverSelectorPath: path.join(root, "selectors", "money-saver.js"),
+  };
+  const result = await loadSyntheticConfigWithDefaults(paths);
+  assert.equal(result.definitions.length, 1);
+  assert.equal(result.definitions[0].slug, "hydra/money-saver");
 });

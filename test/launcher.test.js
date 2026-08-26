@@ -12,7 +12,10 @@ test("macOS builds use patch versions and distinguish development artifacts", ()
 test("the native macOS launcher replaces the Finder command file", async () => {
   await access(new URL("../macos/HydraLauncher.swift", import.meta.url));
   const buildSource = await readFile(new URL("../scripts/build-macos.js", import.meta.url), "utf8");
+  const menuSource = await readFile(new URL("../src/menubar.swift", import.meta.url), "utf8");
   assert.match(buildSource, /HYDRA_SIGNING_IDENTITY/);
   assert.match(buildSource, /HydraDebugLogging/);
+  assert.match(menuSource, /NSOpenPanel/);
+  assert.match(menuSource, /withApplicationAt/);
   await assert.rejects(access(new URL("../Hydra.command", import.meta.url)));
 });

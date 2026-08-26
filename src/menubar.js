@@ -10,7 +10,7 @@ export function shouldStartMenuBar({ platform = process.platform, noMenuBar = fa
 
 export function startMenuBar(
   config,
-  { onQuit, onRefresh, onInstall, onRestore, onOpenConfig, spawnImpl = spawn } = {},
+  { onQuit, onRefresh, onInstall, onRestore, spawnImpl = spawn } = {},
 ) {
   if (!shouldStartMenuBar({ noMenuBar: config.noMenuBar })) return null;
 
@@ -32,7 +32,7 @@ export function startMenuBar(
     stdoutBuffer = lines.pop() ?? "";
     for (const line of lines) {
       if (!line.trim()) continue;
-      handleHelperLine(line, { onQuit, onRefresh, onInstall, onRestore, onOpenConfig });
+      handleHelperLine(line, { onQuit, onRefresh, onInstall, onRestore });
     }
   });
 
@@ -143,7 +143,7 @@ function appToolsLabel(status) {
   return `${servers}: ${status.status}${detail}`;
 }
 
-export function handleHelperLine(line, { onQuit, onRefresh, onInstall, onRestore, onOpenConfig }) {
+export function handleHelperLine(line, { onQuit, onRefresh, onInstall, onRestore }) {
   let message;
   try {
     message = JSON.parse(line);
@@ -154,13 +154,13 @@ export function handleHelperLine(line, { onQuit, onRefresh, onInstall, onRestore
   if (message?.type === "action" && message.id === "install") onInstall?.();
   if (message?.type === "action" && message.id === "restore") onRestore?.();
   if (message?.type === "action" && message.id === "refresh") onRefresh?.();
-  if (message?.type === "action" && message.id === "open_config") onOpenConfig?.();
 }
 
 function menuBarPayload(config) {
   return {
     title: "Hydra",
     iconPath: path.join(path.dirname(fileURLToPath(import.meta.url)), "hydra-menubar.png"),
+    configPath: config.paths.hydraConfigPath,
     statusItems: menuBarStatusItems(config),
   };
 }

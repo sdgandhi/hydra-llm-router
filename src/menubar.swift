@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import UniformTypeIdentifiers
 
 final class HydraMenuDelegate: NSObject, NSApplicationDelegate {
   private var info: [String: Any]
@@ -41,7 +42,51 @@ final class HydraMenuDelegate: NSObject, NSApplicationDelegate {
 
   @objc private func performMenuAction(_ sender: NSMenuItem) {
     guard let id = sender.representedObject as? String else { return }
+    if id == "open_config" {
+      chooseApplicationAndOpenConfig()
+      return
+    }
     emit(["type": "action", "id": id])
+  }
+
+  private func chooseApplicationAndOpenConfig() {
+    let configURL = URL(fileURLWithPath: stringValue("configPath"))
+    guard FileManager.default.fileExists(atPath: configURL.path) else {
+      showError("Hydra config not found", detail: "No config exists at \(configURL.path).")
+      return
+    }
+
+    let panel = NSOpenPanel()
+    panel.title = "Open Hydra Config With"
+    panel.message = "Choose an application to open config.toml."
+    panel.prompt = "Open"
+    panel.directoryURL = URL(fileURLWithPath: "/Applications", isDirectory: true)
+    panel.allowedContentTypes = [UTType.application]
+    panel.canChooseFiles = true
+    panel.canChooseDirectories = false
+    panel.allowsMultipleSelection = false
+    panel.treatsFilePackagesAsDirectories = false
+
+    guard panel.runModal() == .OK, let applicationURL = panel.url else { return }
+    let configuration = NSWorkspace.OpenConfiguration()
+    NSWorkspace.shared.open(
+      [configURL],
+      withApplicationAt: applicationURL,
+      configuration: configuration
+    ) { [weak self] _, error in
+      guard let error else { return }
+      DispatchQueue.main.async {
+        self?.showError("Could not open Hydra config", detail: error.localizedDescription)
+      }
+    }
+  }
+
+  private func showError(_ title: String, detail: String) {
+    let alert = NSAlert()
+    alert.messageText = title
+    alert.informativeText = detail
+    alert.alertStyle = .warning
+    alert.runModal()
   }
 
   private func addDisabled(_ title: String, to menu: NSMenu) {

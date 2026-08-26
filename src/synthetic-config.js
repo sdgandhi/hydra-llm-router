@@ -174,6 +174,11 @@ export async function loadSyntheticConfig(paths, { allowMissing = true } = {}) {
   return parseSyntheticConfig(text, { configPath: paths.hydraConfigPath });
 }
 
+export async function loadSyntheticConfigWithDefaults(paths) {
+  await ensureSyntheticDefaults(paths);
+  return loadSyntheticConfig(paths, { allowMissing: false });
+}
+
 export async function ensureSyntheticDefaults(paths) {
   await mkdir(paths.selectorsDir, { recursive: true });
   const bundledSelector = path.join(path.dirname(fileURLToPath(import.meta.url)), "selectors", "money-saver.js");

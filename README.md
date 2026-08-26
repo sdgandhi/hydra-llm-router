@@ -36,7 +36,7 @@ Use `--ollama-url`, `--lmstudio-url`, `--openai-base-url`, `--port`, and the app
 
 Hydra is distributed as a signed macOS DMG. Open the DMG, drag `Hydra.app` to Applications, and launch it. The app runs entirely in the menu bar; it does not open a Dock window.
 
-Use `Install Hydra in Codex` to back up the current Codex configuration, refresh the model catalog, and route Codex through Hydra. Use `Restore Codex Config` to restore that backup without quitting. `Quit Hydra & Restore Codex` restores the backup and stops the router.
+Hydra creates its bundled Money Saver synthetic model on first launch without modifying Codex. Use `Install Hydra in Codex` to back up the current Codex configuration, refresh the model catalog, and route Codex through Hydra. Use `Restore Codex Config` to restore that backup without quitting. `Open Hydra Config` asks which installed application should open the file. `Quit Hydra & Restore Codex` restores the backup and stops the router.
 
 Development builds bundle the current Node runtime, use the current package version without changing it, enable redacted debug logging, and are ad-hoc signed:
 
