@@ -4,7 +4,7 @@ import { constants as fsConstants } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parse } from "smol-toml";
-import { ensureHydraSettings } from "./hydra-config.js";
+import { ensureHydraConfig } from "./hydra-config.js";
 
 export const SYNTHETIC_REASONING_LEVELS = [
   { effort: "low", description: "Use light reasoning." },
@@ -177,7 +177,7 @@ export async function loadSyntheticConfig(paths, { allowMissing = true } = {}) {
 }
 
 export async function loadSyntheticConfigWithDefaults(paths) {
-  await ensureHydraSettings(paths.hydraConfigPath, { env: {} });
+  await ensureHydraConfig(paths.hydraConfigPath);
   await ensureSyntheticDefaults(paths);
   return loadSyntheticConfig(paths, { allowMissing: false });
 }

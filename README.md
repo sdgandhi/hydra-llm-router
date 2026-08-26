@@ -296,7 +296,7 @@ node src/cli.js install --config ./profiles/dev.toml
 
 An explicit config defaults generated state to its own directory, which keeps development and test profiles separate from `~/.codex/hydra/`. `codex.home` still determines which Codex installation `install` and `restore` modify. Router settings such as the port and provider URLs take effect when Hydra restarts; `refresh` reloads catalogs and synthetic definitions.
 
-On the first run after upgrading, Hydra imports legacy `settings.json` and supported Hydra environment-variable values into missing TOML sections, then removes `settings.json`. After migration, runtime settings come from TOML and flags. Release signing and notarization variables remain build-only inputs.
+Runtime settings come exclusively from TOML and command flags. Release signing and notarization variables remain build-only inputs.
 
 Generated files live under:
 

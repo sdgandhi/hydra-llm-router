@@ -24,7 +24,7 @@ import { configureDebugLog, writeDebugLine } from "./debug.js";
 import { menuBarStatusItems, startMenuBar } from "./menubar.js";
 import { createHydraHandler, emulatedToolStatuses } from "./router.js";
 import { ensureSyntheticDefaults, loadSyntheticConfig } from "./synthetic-config.js";
-import { ensureHydraSettings, loadHydraSettings } from "./hydra-config.js";
+import { ensureHydraConfig, loadHydraSettings } from "./hydra-config.js";
 import { hydraVersion } from "./version.js";
 
 const commands = new Set(["serve", "stop", "refresh", "install", "restore", "status", "models", "route", "prompt", "session"]);
@@ -129,10 +129,9 @@ function resolvedConfigPath(options) {
   return path.join(codexHome, "hydra", "config.toml");
 }
 
-export async function buildConfig(options = {}, { env = process.env } = {}) {
+export async function buildConfig(options = {}) {
   const configPath = resolvedConfigPath(options);
-  const legacySettingsPath = options.config ? null : path.join(path.dirname(configPath), "settings.json");
-  const ensured = await ensureHydraSettings(configPath, { legacySettingsPath, env });
+  const ensured = await ensureHydraConfig(configPath);
   const saved = await loadHydraSettings(configPath);
   const paths = defaultPaths({
     codexHome: options.codex_home ?? saved.codexHome,

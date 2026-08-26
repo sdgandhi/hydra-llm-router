@@ -27,14 +27,11 @@ test("parses app tool bridge flags", async () => {
   });
   const root = await mkdtemp(path.join(tmpdir(), "hydra-cli-config-"));
   try {
-    const config = await buildConfig(
-      {
-        config: path.join(root, "config.toml"),
-        app_tool_servers: "codex_apps,node_repl",
-        codex_bin: "/tmp/codex",
-      },
-      { env: {} },
-    );
+    const config = await buildConfig({
+      config: path.join(root, "config.toml"),
+      app_tool_servers: "codex_apps,node_repl",
+      codex_bin: "/tmp/codex",
+    });
     assert.equal(config.codexBin, "/tmp/codex");
     assert.deepEqual(config.appToolServers, ["codex_apps", "node_repl"]);
     assert.equal(config.lmStudioBaseUrl, "http://127.0.0.1:11239");
@@ -50,7 +47,7 @@ test("parses an explicit config path for any subcommand", () => {
   });
 });
 
-test("uses CLI overrides before TOML and ignores environment after config exists", async () => {
+test("uses CLI overrides before TOML", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "hydra-cli-precedence-"));
   const configPath = path.join(root, "config.toml");
   try {
@@ -83,16 +80,11 @@ servers = ["codex_apps"]
 web_search_commands = [["search"]]
 `,
     );
-    const config = await buildConfig(
-      { config: configPath, port: "4666", ollama_url: "http://flag-ollama" },
-      {
-        env: {
-          HYDRA_PORT: "4777",
-          OLLAMA_BASE_URL: "http://env-ollama",
-          HYDRA_OPENAI_BASE_URL: "https://env.example/v1",
-        },
-      },
-    );
+    const config = await buildConfig({
+      config: configPath,
+      port: "4666",
+      ollama_url: "http://flag-ollama",
+    });
 
     assert.equal(config.port, 4666);
     assert.equal(config.ollamaBaseUrl, "http://flag-ollama");

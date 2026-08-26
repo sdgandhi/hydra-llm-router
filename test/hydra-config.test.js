@@ -1,9 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { ensureHydraSettings, loadHydraSettings, parseHydraSettings } from "../src/hydra-config.js";
+import { ensureHydraConfig, loadHydraSettings, parseHydraSettings } from "../src/hydra-config.js";
 
 test("parses the unified TOML schema and resolves relative paths", () => {
   const configPath = "/tmp/hydra-profile/config.toml";
@@ -58,65 +58,40 @@ web_search_commands = [["./bin/search", "--json"], ["search"]]
   ]);
 });
 
-test("migrates legacy settings and environment configuration into config.toml once", async () => {
-  const root = await mkdtemp(path.join(tmpdir(), "hydra-config-migration-"));
+test("creates a complete default config once", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "hydra-config-default-"));
   const configPath = path.join(root, "config.toml");
-  const legacySettingsPath = path.join(root, "settings.json");
   try {
-    await mkdir(path.join(root, "selectors"));
-    await writeFile(
-      configPath,
-      `[synthetic_models.test]
-display_name = "Test"
-description = "Test"
-selector = "selectors/test.js"
-candidates = ["gpt-test"]
-fallback_model = "gpt-test"
-routing_scope = "user_turn"
-sticky_tool_continuations = true
-selector_timeout_ms = 0
-retry_count = 0
-retry_delay_ms = 0
-`,
-    );
-    await writeFile(
-      legacySettingsPath,
-      JSON.stringify({
-        port: 4555,
-        ollamaBaseUrl: "http://legacy-ollama",
-        lmStudioBaseUrl: "http://legacy-lmstudio",
-        appTools: "off",
-        appToolServers: ["legacy_apps"],
-        codexBin: "/legacy/codex",
-      }),
-    );
-
-    const result = await ensureHydraSettings(configPath, {
-      legacySettingsPath,
-      env: {
-        HYDRA_OPENAI_BASE_URL: "https://api.openai.com/v1",
-        OPENAI_API_KEY: "migrated-secret",
-        HYDRA_OLLAMA_CONTEXT_WINDOW: "8192",
-        HYDRA_LMSTUDIO_CONTEXT_WINDOW: "16384",
-        HYDRA_WEB_SEARCH_COMMAND: "search --json",
-      },
-    });
+    const result = await ensureHydraConfig(configPath);
     const config = await loadHydraSettings(configPath);
+    const original = await readFile(configPath, "utf8");
+    const second = await ensureHydraConfig(configPath);
 
-    assert.equal(result.created, false);
-    assert.equal(config.port, 4555);
-    assert.equal(config.openaiBaseUrl, "https://api.openai.com/v1");
-    assert.equal(config.openaiApiKey, "migrated-secret");
-    assert.equal(config.ollamaBaseUrl, "http://legacy-ollama");
-    assert.equal(config.lmStudioBaseUrl, "http://legacy-lmstudio");
-    assert.equal(config.ollamaContextWindow, 8192);
-    assert.equal(config.lmStudioContextWindow, 16384);
-    assert.equal(config.appTools, "off");
-    assert.deepEqual(config.appToolServers, ["legacy_apps"]);
-    assert.deepEqual(config.webSearchCommands, [["search", "--json"]]);
+    assert.equal(result.created, true);
+    assert.equal(second.created, false);
+    assert.equal(config.port, 3847);
+    assert.equal(config.openaiBaseUrl, "https://chatgpt.com/backend-api/codex");
+    assert.equal(config.ollamaBaseUrl, "http://127.0.0.1:11434");
+    assert.equal(config.lmStudioBaseUrl, "http://127.0.0.1:11239");
+    assert.equal(config.appTools, "auto");
+    assert.deepEqual(config.appToolServers, ["codex_apps"]);
+    assert.deepEqual(config.webSearchCommands.slice(1), [["ddgr"], ["search"], ["duckduckgo"]]);
     assert.equal((await stat(configPath)).mode & 0o777, 0o600);
-    await assert.rejects(readFile(legacySettingsPath), (error) => error.code === "ENOENT");
-    assert.match(await readFile(configPath, "utf8"), /\[synthetic_models\.test\]/);
+    assert.equal(await readFile(configPath, "utf8"), original);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("does not add missing sections to an existing config", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "hydra-config-existing-"));
+  const configPath = path.join(root, "config.toml");
+  const existing = "[hydra]\nport = 4555\n";
+  try {
+    await writeFile(configPath, existing);
+    assert.deepEqual(await ensureHydraConfig(configPath), { created: false });
+    assert.equal(await readFile(configPath, "utf8"), existing);
+    assert.equal((await loadHydraSettings(configPath)).port, 4555);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

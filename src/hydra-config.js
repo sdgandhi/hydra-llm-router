@@ -1,4 +1,4 @@
-import { chmod, mkdir, readFile, unlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 import { parse } from "smol-toml";
@@ -183,119 +183,50 @@ export function parseHydraSettings(text, { configPath }) {
   };
 }
 
-function envBoolean(value, fallback) {
-  if (value == null || value === "") return fallback;
-  return !new Set(["0", "false", "off", "no"]).has(String(value).toLowerCase());
-}
-
-function envInteger(value) {
-  const number = Number(value);
-  return Number.isInteger(number) && number > 0 ? number : null;
-}
-
-function legacyValues({ legacy = {}, env = {} } = {}) {
-  return {
-    port: Number(legacy.port ?? env.HYDRA_PORT) || HYDRA_CONFIG_DEFAULTS.port,
-    debug: envBoolean(env.HYDRA_DEBUG ?? env.HYDRA_DEBUG_AUTH, HYDRA_CONFIG_DEFAULTS.debug),
-    menubar: HYDRA_CONFIG_DEFAULTS.menubar,
-    codexHome: HYDRA_CONFIG_DEFAULTS.codexHome,
-    codexBin: legacy.codexBin ?? env.HYDRA_CODEX_BIN ?? HYDRA_CONFIG_DEFAULTS.codexBin,
-    openaiBaseUrl:
-      legacy.openaiBaseUrl ?? env.HYDRA_OPENAI_BASE_URL ?? HYDRA_CONFIG_DEFAULTS.openaiBaseUrl,
-    openaiApiKey: env.OPENAI_API_KEY || null,
-    ollamaBaseUrl: legacy.ollamaBaseUrl ?? env.OLLAMA_BASE_URL ?? HYDRA_CONFIG_DEFAULTS.ollamaBaseUrl,
-    ollamaContextWindow: envInteger(env.HYDRA_OLLAMA_CONTEXT_WINDOW),
-    lmStudioBaseUrl:
-      legacy.lmStudioBaseUrl ?? env.LMSTUDIO_BASE_URL ?? HYDRA_CONFIG_DEFAULTS.lmStudioBaseUrl,
-    lmStudioContextWindow: envInteger(env.HYDRA_LMSTUDIO_CONTEXT_WINDOW),
-    appTools: legacy.appTools ?? env.HYDRA_APP_TOOLS ?? HYDRA_CONFIG_DEFAULTS.appTools,
-    appToolServers:
-      legacy.appToolServers ??
-      String(env.HYDRA_APP_TOOL_SERVERS ?? HYDRA_CONFIG_DEFAULTS.appToolServers.join(","))
-        .split(",")
-        .map((value) => value.trim())
-        .filter(Boolean),
-    webSearchCommands: env.HYDRA_WEB_SEARCH_COMMAND
-      ? [String(env.HYDRA_WEB_SEARCH_COMMAND).split(/\s+/).filter(Boolean)]
-      : HYDRA_CONFIG_DEFAULTS.webSearchCommands,
-  };
-}
-
 function quote(value) {
   return JSON.stringify(String(value));
 }
 
-function settingsSections(parsed, values) {
-  const sections = [];
-  if (!parsed.hydra) {
-    sections.push(`[hydra]\nport = ${values.port}\ndebug = ${values.debug}\nmenubar = ${values.menubar}\ndata_dir = "."`);
-  }
-  if (!parsed.codex) sections.push(`[codex]\nhome = ${quote(values.codexHome)}\nbinary = ${quote(values.codexBin)}`);
-  if (!parsed.providers?.openai) {
-    const apiKey = values.openaiApiKey ? `\napi_key = ${quote(values.openaiApiKey)}` : "";
-    sections.push(`[providers.openai]\nbase_url = ${quote(values.openaiBaseUrl)}${apiKey}`);
-  }
-  if (!parsed.providers?.ollama) {
-    const context = values.ollamaContextWindow ? `\ncontext_window = ${values.ollamaContextWindow}` : "";
-    sections.push(`[providers.ollama]\nbase_url = ${quote(values.ollamaBaseUrl)}${context}`);
-  }
-  if (!parsed.providers?.lmstudio) {
-    const context = values.lmStudioContextWindow ? `\ncontext_window = ${values.lmStudioContextWindow}` : "";
-    sections.push(`[providers.lmstudio]\nbase_url = ${quote(values.lmStudioBaseUrl)}${context}`);
-  }
-  if (!parsed.app_tools) {
-    sections.push(`[app_tools]\nmode = ${quote(values.appTools)}\nservers = ${JSON.stringify(values.appToolServers)}`);
-  }
-  if (!parsed.tools) {
-    sections.push(`[tools]\nweb_search_commands = ${JSON.stringify(values.webSearchCommands)}`);
-  }
-  return sections;
+function defaultConfigText() {
+  return `[hydra]
+port = ${HYDRA_CONFIG_DEFAULTS.port}
+debug = ${HYDRA_CONFIG_DEFAULTS.debug}
+menubar = ${HYDRA_CONFIG_DEFAULTS.menubar}
+data_dir = "."
+
+[codex]
+home = ${quote(HYDRA_CONFIG_DEFAULTS.codexHome)}
+binary = ${quote(HYDRA_CONFIG_DEFAULTS.codexBin)}
+
+[providers.openai]
+base_url = ${quote(HYDRA_CONFIG_DEFAULTS.openaiBaseUrl)}
+
+[providers.ollama]
+base_url = ${quote(HYDRA_CONFIG_DEFAULTS.ollamaBaseUrl)}
+
+[providers.lmstudio]
+base_url = ${quote(HYDRA_CONFIG_DEFAULTS.lmStudioBaseUrl)}
+
+[app_tools]
+mode = ${quote(HYDRA_CONFIG_DEFAULTS.appTools)}
+servers = ${JSON.stringify(HYDRA_CONFIG_DEFAULTS.appToolServers)}
+
+[tools]
+web_search_commands = ${JSON.stringify(HYDRA_CONFIG_DEFAULTS.webSearchCommands)}
+`;
 }
 
-export async function ensureHydraSettings(
-  configPath,
-  { legacySettingsPath = null, env = process.env } = {},
-) {
-  let text = "";
-  let created = false;
+export async function ensureHydraConfig(configPath) {
   try {
-    text = await readFile(configPath, "utf8");
+    await readFile(configPath, "utf8");
   } catch (error) {
     if (error.code !== "ENOENT") throw error;
-    created = true;
-  }
-  let parsed = {};
-  if (text.trim()) {
-    try {
-      parsed = parse(text);
-    } catch (error) {
-      throw new Error(`Invalid Hydra TOML at ${configPath}: ${error.message}`);
-    }
-  }
-  let legacy = {};
-  if (legacySettingsPath) {
-    try {
-      legacy = JSON.parse(await readFile(legacySettingsPath, "utf8"));
-    } catch (error) {
-      if (error.code !== "ENOENT") throw error;
-    }
-  }
-  const sections = settingsSections(parsed, legacyValues({ legacy, env }));
-  if (sections.length) {
     await mkdir(path.dirname(configPath), { recursive: true });
-    const prefix = sections.join("\n\n");
-    const suffix = text.trim() ? `\n\n${text.trim()}\n` : "\n";
-    await writeFile(configPath, `${prefix}${suffix}`, { mode: 0o600 });
+    await writeFile(configPath, defaultConfigText(), { mode: 0o600 });
+    return { created: true };
   }
   await chmod(configPath, 0o600);
-  if (legacySettingsPath) {
-    try {
-      await unlink(legacySettingsPath);
-    } catch (error) {
-      if (error.code !== "ENOENT") throw error;
-    }
-  }
-  return { created, migratedSections: sections.length };
+  return { created: false };
 }
 
 export async function loadHydraSettings(configPath) {
