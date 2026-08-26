@@ -3,7 +3,7 @@ import { homedir } from "node:os";
 import path from "node:path";
 import { buildCatalog } from "./catalog.js";
 import { emulatedToolStatuses } from "./router.js";
-import { ensureSyntheticDefaults, loadSyntheticConfig } from "./synthetic-config.js";
+import { loadSyntheticConfig } from "./synthetic-config.js";
 
 export function expandHome(value) {
   if (!value || value === "~") return homedir();
@@ -11,21 +11,22 @@ export function expandHome(value) {
   return value;
 }
 
-export function defaultPaths(codexHome = process.env.CODEX_HOME ?? "~/.codex") {
-  const home = expandHome(codexHome);
-  const hydraDir = path.join(home, "hydra");
+export function defaultPaths({ codexHome = "~/.codex", configPath = null, dataDir = null } = {}) {
+  const home = path.resolve(expandHome(codexHome));
+  const hydraConfigPath = path.resolve(expandHome(configPath ?? path.join(home, "hydra", "config.toml")));
+  const configDir = path.dirname(hydraConfigPath);
+  const hydraDir = path.resolve(expandHome(dataDir ?? configDir));
   return {
     codexHome: home,
     hydraDir,
     codexConfigPath: path.join(home, "config.toml"),
     codexModelCachePath: path.join(home, "models_cache.json"),
-    hydraConfigPath: path.join(hydraDir, "config.toml"),
-    selectorsDir: path.join(hydraDir, "selectors"),
-    moneySaverSelectorPath: path.join(hydraDir, "selectors", "money-saver.js"),
+    hydraConfigPath,
+    selectorsDir: path.join(configDir, "selectors"),
+    moneySaverSelectorPath: path.join(configDir, "selectors", "money-saver.js"),
     catalogPath: path.join(hydraDir, "hydra-models.json"),
     routesPath: path.join(hydraDir, "routes.json"),
     backupPath: path.join(hydraDir, "config.backup.toml"),
-    settingsPath: path.join(hydraDir, "settings.json"),
     pidPath: path.join(hydraDir, "hydra.pid"),
     logPath: path.join(hydraDir, "hydra.log"),
   };
@@ -54,7 +55,7 @@ export async function writeJsonAtomic(filePath, value) {
 export async function refreshCatalog(config) {
   const sourceCatalog = await readJson(config.paths.codexModelCachePath);
   const syntheticConfig = await loadSyntheticConfig(config.paths);
-  const toolStatuses = await emulatedToolStatuses();
+  const toolStatuses = await emulatedToolStatuses(config.webSearchCommands);
   const catalog = await buildCatalog({
     sourceCatalog,
     ollamaBaseUrl: config.ollamaBaseUrl,
@@ -62,26 +63,12 @@ export async function refreshCatalog(config) {
     fetchImpl: globalThis.fetch,
     webSearchReady: toolStatuses.some((tool) => tool.name === "web_search" && tool.status === "ready"),
     syntheticDefinitions: syntheticConfig.definitions,
+    ollamaContextWindow: config.ollamaContextWindow,
+    lmStudioContextWindow: config.lmStudioContextWindow,
   });
   await writeJsonAtomic(config.paths.catalogPath, catalog.catalog);
   await writeJsonAtomic(config.paths.routesPath, catalog.routes);
-  await writeJsonAtomic(config.paths.settingsPath, {
-    port: config.port,
-    ollamaBaseUrl: config.ollamaBaseUrl,
-    lmStudioBaseUrl: config.lmStudioBaseUrl,
-    openaiBaseUrl: config.openaiBaseUrl,
-    appTools: config.appTools,
-    appToolServers: config.appToolServers,
-    codexBin: config.codexBin,
-    syntheticModels: syntheticConfig.definitions.map(({ selectorHash, ...definition }) => definition),
-    omittedSyntheticModels: syntheticConfig.omitted,
-    updatedAt: new Date().toISOString(),
-  });
   return { ...catalog, syntheticConfig };
-}
-
-export async function loadHydraConfig(paths) {
-  return readJson(paths.settingsPath, {});
 }
 
 export async function isHydraInstalled(config) {
@@ -138,7 +125,6 @@ export function removeManagedHydraConfig(toml) {
 }
 
 export async function installHydraConfig(config) {
-  await ensureSyntheticDefaults(config.paths);
   const catalog = await refreshCatalog(config);
   await mkdir(config.paths.hydraDir, { recursive: true });
   const currentConfig = await readFile(config.paths.codexConfigPath, "utf8");

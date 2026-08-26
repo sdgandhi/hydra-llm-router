@@ -1388,8 +1388,6 @@ test("emulates hosted web search inside non-streaming LM Studio turns", async ()
     }),
   );
 
-  const originalCommand = process.env.HYDRA_WEB_SEARCH_COMMAND;
-  process.env.HYDRA_WEB_SEARCH_COMMAND = "/bin/echo HYDRA_SEARCH_RESULT";
   const originalFetch = globalThis.fetch;
   const fetchCalls = [];
   let hydra;
@@ -1420,6 +1418,7 @@ test("emulates hosted web search inside non-streaming LM Studio turns", async ()
       ollamaBaseUrl: "http://127.0.0.1:11434",
       lmStudioBaseUrl: "http://127.0.0.1:11239",
       openaiBaseUrl: "https://chatgpt.com/backend-api/codex",
+      webSearchCommands: [["/bin/echo", "HYDRA_SEARCH_RESULT"]],
     });
     hydra = createHttpServer(handler);
     hydra.listen(0, "127.0.0.1");
@@ -1448,35 +1447,22 @@ test("emulates hosted web search inside non-streaming LM Studio turns", async ()
       await Promise.allSettled([once(hydra, "close")]);
     }
     globalThis.fetch = originalFetch;
-    restoreEnv("HYDRA_WEB_SEARCH_COMMAND", originalCommand);
     await rm(tempDir, { recursive: true, force: true });
   }
 });
 
 test("reports emulated web search as ready when command exists", async () => {
-  const original = process.env.HYDRA_WEB_SEARCH_COMMAND;
-  process.env.HYDRA_WEB_SEARCH_COMMAND = "/bin/echo --fake-search";
-  try {
-    assert.deepEqual(await emulatedToolStatuses(), [
-      { name: "web_search", status: "ready", detail: undefined },
-      { name: "tool_search", status: "ready" },
-    ]);
-  } finally {
-    restoreEnv("HYDRA_WEB_SEARCH_COMMAND", original);
-  }
+  assert.deepEqual(await emulatedToolStatuses([["/bin/echo", "--fake-search"]]), [
+    { name: "web_search", status: "ready", detail: undefined },
+    { name: "tool_search", status: "ready" },
+  ]);
 });
 
 test("reports emulated web search as unavailable when command is missing", async () => {
-  const original = process.env.HYDRA_WEB_SEARCH_COMMAND;
-  process.env.HYDRA_WEB_SEARCH_COMMAND = "/definitely/missing/hydra-search";
-  try {
-    assert.deepEqual(await emulatedToolStatuses(), [
-      { name: "web_search", status: "unavailable", detail: "no executable search command found" },
-      { name: "tool_search", status: "ready" },
-    ]);
-  } finally {
-    restoreEnv("HYDRA_WEB_SEARCH_COMMAND", original);
-  }
+  assert.deepEqual(await emulatedToolStatuses([["/definitely/missing/hydra-search"]]), [
+    { name: "web_search", status: "unavailable", detail: "no executable search command found" },
+    { name: "tool_search", status: "ready" },
+  ]);
 });
 
 test("retries a selected synthetic target then uses its concrete fallback", async () => {
@@ -1755,11 +1741,6 @@ test("keeps tool continuations on the selected user-turn model", async () => {
     await rm(tempDir, { recursive: true, force: true });
   }
 });
-
-function restoreEnv(key, value) {
-  if (value === undefined) delete process.env[key];
-  else process.env[key] = value;
-}
 
 function syntheticContextFixture() {
   return {

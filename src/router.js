@@ -2,7 +2,6 @@ import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
 import { access, readFile } from "node:fs/promises";
-import { homedir } from "node:os";
 import { delimiter, isAbsolute, join } from "node:path";
 import { promisify } from "node:util";
 import { brotliDecompressSync, gunzipSync, inflateSync, zstdDecompressSync } from "node:zlib";
@@ -28,16 +27,8 @@ const execFileAsync = promisify(execFile);
 const EMULATED_TOOL_NAMES = new Set(["web_search", "tool_search"]);
 const MAX_EMULATED_TOOL_ROUNDS = 4;
 const MAX_TOOL_RESULT_CHARS = 6000;
-const HYDRA_DDGR_PATH = `${homedir()}/.codex/hydra/bin/ddgr`;
-
-function webSearchCommands() {
-  return process.env.HYDRA_WEB_SEARCH_COMMAND
-    ? [process.env.HYDRA_WEB_SEARCH_COMMAND]
-    : [HYDRA_DDGR_PATH, "ddgr", "search", "duckduckgo"];
-}
-
 async function isExecutable(command) {
-  const [bin] = String(command ?? "").split(/\s+/).filter(Boolean);
+  const [bin] = Array.isArray(command) ? command : [];
   if (!bin) return false;
   const candidates =
     isAbsolute(bin) || bin.includes("/")
@@ -58,8 +49,7 @@ async function isExecutable(command) {
   return false;
 }
 
-export async function emulatedToolStatuses() {
-  const commands = webSearchCommands();
+export async function emulatedToolStatuses(commands = []) {
   const webSearchReady = (await Promise.all(commands.map((command) => isExecutable(command)))).some(Boolean);
   return [
     {
@@ -668,13 +658,13 @@ function emulateToolSearch({ tools, query, limit = 8 }) {
   return JSON.stringify({ query, tools: matches }, null, 2);
 }
 
-async function runSearch({ query, maxResults = 5 }) {
-  const commands = webSearchCommands();
+async function runSearch({ query, maxResults = 5, webSearchCommands = [] }) {
+  const commands = webSearchCommands;
   const limitedResults = Math.max(1, Math.min(Number(maxResults) || 5, 10));
   const failures = [];
 
   for (const command of commands) {
-    const [bin, ...prefixArgs] = command.split(/\s+/).filter(Boolean);
+    const [bin, ...prefixArgs] = command;
     if (!bin) continue;
     const args = [...prefixArgs];
     if (bin.endsWith("ddgr")) args.push("--np", "-n", String(limitedResults));
@@ -691,16 +681,20 @@ async function runSearch({ query, maxResults = 5 }) {
     }
   }
 
-  return `Search command failed. Tried: ${commands.join(", ")}. ${failures.join("; ")}`;
+  return `Search command failed. Tried: ${commands.map((command) => command.join(" ")).join(", ")}. ${failures.join("; ")}`;
 }
 
-async function executeEmulatedTool({ name, argumentsText, requestTools }) {
+async function executeEmulatedTool({ name, argumentsText, requestTools, webSearchCommands }) {
   const args = parseToolArguments(argumentsText);
   if (name === "tool_search") {
     return emulateToolSearch({ tools: requestTools, query: args.query ?? args.q ?? "", limit: args.limit });
   }
   if (name === "web_search") {
-    return await runSearch({ query: args.query ?? args.q ?? "", maxResults: args.max_results ?? args.limit });
+    return await runSearch({
+      query: args.query ?? args.q ?? "",
+      maxResults: args.max_results ?? args.limit,
+      webSearchCommands,
+    });
   }
   return `Unsupported emulated tool: ${name}`;
 }
@@ -712,7 +706,7 @@ function toolSourcesForSearch({ requestTools, appTools }) {
   ];
 }
 
-async function createLocalToolBroker({ req, body, appServerBridge, debugAuth }) {
+async function createLocalToolBroker({ req, body, appServerBridge, debugAuth, webSearchCommands }) {
   if (requestedNoTools(body)) {
     return {
       modelTools: [],
@@ -734,7 +728,7 @@ async function createLocalToolBroker({ req, body, appServerBridge, debugAuth }) 
     debugLogError({ enabled: debugAuth, req, error, stage: "app_tools_discovery" });
   }
 
-  const statuses = await emulatedToolStatuses();
+  const statuses = await emulatedToolStatuses(webSearchCommands);
   const readyEmulatedNames = new Set(
     statuses.filter((status) => status.status === "ready").map((status) => status.name),
   );
@@ -792,6 +786,7 @@ async function createLocalToolBroker({ req, body, appServerBridge, debugAuth }) 
                 name: toolCall.name,
                 argumentsText: toolCall.argumentsText,
                 requestTools: searchableTools,
+                webSearchCommands,
               })
             : await appServerBridge.callTool(toolCall);
         }
@@ -967,11 +962,21 @@ function writeResponseStreamDone(res, { id, model, output }) {
   });
 }
 
-async function callOllama({ req, body, route, ollamaBaseUrl, res, debugAuth, appServerBridge, signal }) {
+async function callOllama({
+  req,
+  body,
+  route,
+  ollamaBaseUrl,
+  res,
+  debugAuth,
+  appServerBridge,
+  webSearchCommands,
+  signal,
+}) {
   const stream = body.stream !== false;
   const id = responseId();
   const url = new URL("/api/chat", ollamaBaseUrl);
-  const toolBroker = await createLocalToolBroker({ req, body, appServerBridge, debugAuth });
+  const toolBroker = await createLocalToolBroker({ req, body, appServerBridge, debugAuth, webSearchCommands });
   const isHandledToolCall = (toolCall) => toolBroker.isHandled(toolCall);
   const executeHandledToolCall = async (toolCall) => {
     return {
@@ -1357,11 +1362,21 @@ function mergeLMStudioToolCallDeltas(target, deltas) {
   }
 }
 
-async function callLMStudio({ req, body, route, lmStudioBaseUrl, res, debugAuth, appServerBridge, signal }) {
+async function callLMStudio({
+  req,
+  body,
+  route,
+  lmStudioBaseUrl,
+  res,
+  debugAuth,
+  appServerBridge,
+  webSearchCommands,
+  signal,
+}) {
   const stream = body.stream !== false;
   const id = responseId();
   const url = new URL("/v1/chat/completions", lmStudioBaseUrl);
-  const toolBroker = await createLocalToolBroker({ req, body, appServerBridge, debugAuth });
+  const toolBroker = await createLocalToolBroker({ req, body, appServerBridge, debugAuth, webSearchCommands });
   let messages;
   try {
     messages = normalizeLMStudioInput(body.input, { allowImages: Boolean(route.capabilities?.vision) });
@@ -1848,14 +1863,35 @@ async function dispatchDirectRoute({
   res,
   debugAuth,
   appServerBridge,
+  webSearchCommands,
   signal,
 }) {
   if (route.provider === "ollama") {
-    await callOllama({ req, body, route, ollamaBaseUrl, res, debugAuth, appServerBridge, signal });
+    await callOllama({
+      req,
+      body,
+      route,
+      ollamaBaseUrl,
+      res,
+      debugAuth,
+      appServerBridge,
+      webSearchCommands,
+      signal,
+    });
     return;
   }
   if (route.provider === "lmstudio") {
-    await callLMStudio({ req, body, route, lmStudioBaseUrl, res, debugAuth, appServerBridge, signal });
+    await callLMStudio({
+      req,
+      body,
+      route,
+      lmStudioBaseUrl,
+      res,
+      debugAuth,
+      appServerBridge,
+      webSearchCommands,
+      signal,
+    });
     return;
   }
   await forwardOpenAI({ req, body, openaiBaseUrl, apiKey, res, route, debugAuth, signal });
@@ -1951,6 +1987,7 @@ async function handleSyntheticRequest({
   apiKey,
   debugAuth,
   appServerBridge,
+  webSearchCommands,
   source = "codex",
   inspectOnly = false,
   syntheticContextOptions = {},
@@ -2054,6 +2091,7 @@ async function handleSyntheticRequest({
     apiKey,
     debugAuth,
     appServerBridge,
+    webSearchCommands,
   };
   let ultimate;
   try {
@@ -2149,6 +2187,7 @@ export function createHydraHandler({
   lmStudioBaseUrl,
   openaiBaseUrl,
   apiKey,
+  webSearchCommands = [],
   debugAuth = false,
   appServerBridge = null,
   syntheticContextOptions = {},
@@ -2266,6 +2305,7 @@ export function createHydraHandler({
           apiKey,
           debugAuth,
           appServerBridge,
+          webSearchCommands,
           source: "cli",
           inspectOnly: true,
           syntheticContextOptions,
@@ -2289,6 +2329,7 @@ export function createHydraHandler({
           apiKey,
           debugAuth,
           appServerBridge,
+          webSearchCommands,
           syntheticContextOptions,
           source: requestSource(req),
           onSyntheticSelection,
@@ -2306,6 +2347,7 @@ export function createHydraHandler({
         res,
         debugAuth,
         appServerBridge,
+        webSearchCommands,
         signal: cancellation.signal,
       });
     } catch (error) {

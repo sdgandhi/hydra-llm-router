@@ -5,12 +5,13 @@ import { createServer } from "node:http";
 import { createInterface } from "node:readline/promises";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
+import path from "node:path";
 import {
   defaultPaths,
+  expandHome,
   installHydraConfig,
   isHydraInstalled,
   loadCatalog,
-  loadHydraConfig,
   refreshCatalog,
   restoreConfig,
   stopServer,
@@ -22,12 +23,13 @@ import { createAppServerBridge, parseAppToolServers, resolveCodexBin } from "./a
 import { configureDebugLog, writeDebugLine } from "./debug.js";
 import { menuBarStatusItems, startMenuBar } from "./menubar.js";
 import { createHydraHandler, emulatedToolStatuses } from "./router.js";
-import { loadSyntheticConfig, loadSyntheticConfigWithDefaults } from "./synthetic-config.js";
+import { ensureSyntheticDefaults, loadSyntheticConfig } from "./synthetic-config.js";
+import { ensureHydraSettings, loadHydraSettings } from "./hydra-config.js";
 import { hydraVersion } from "./version.js";
 
 const commands = new Set(["serve", "stop", "refresh", "install", "restore", "status", "models", "route", "prompt", "session"]);
-const booleanOptions = new Set(["--debug", "--no-menubar", "--json"]);
-const repeatableOptions = new Set(["--input", "--file", "--image"]);
+const booleanOptions = new Set(["--debug", "--no-debug", "--menubar", "--no-menubar", "--json"]);
+const repeatableOptions = new Set(["--input", "--file", "--image", "--web-search-command"]);
 
 function usage() {
   return `Usage: hydra <command> [options]
@@ -45,6 +47,7 @@ Commands:
   session     Run multiple prompts in one Codex CLI session through Hydra
 
 Options:
+  --config <path>          Hydra TOML config (default: ~/.codex/hydra/config.toml)
   --port <n>               Router port (default: 3847)
   --codex-home <path>      Codex home (default: ~/.codex)
   --ollama-url <url>       Ollama base URL (default: http://127.0.0.1:11434)
@@ -53,6 +56,9 @@ Options:
   --app-tools <auto|off>   Expose Codex app-server tools to local models (default: auto)
   --app-tool-servers <csv> App-server MCP servers to expose (default: codex_apps)
   --codex-bin <path>       Codex CLI binary for app-server tools (default: codex)
+  --ollama-context-window <n>   Override discovered Ollama context windows
+  --lmstudio-context-window <n> Override discovered LM Studio context windows
+  --web-search-command <cmd>    Search command; repeatable
   --model <slug>           Model for route, prompt, or session
   --input <text>           Prompt text; repeat for session turns
   --file <path>            Append a text file to the prompt; repeatable
@@ -61,7 +67,9 @@ Options:
   --session-id <id>        Resume an existing Codex CLI session
   --json                   Preserve Codex CLI JSONL output for prompt
   --debug                  Log redacted request and synthetic routing diagnostics
-  --no-menubar            Do not show the macOS menu bar item while serving
+  --no-debug               Disable debug logging configured in TOML
+  --menubar                Show the macOS menu bar item
+  --no-menubar             Do not show the macOS menu bar item while serving
 `;
 }
 
@@ -99,23 +107,67 @@ export function parseArgs(argv) {
   return { command, options };
 }
 
-export function buildConfig(options = {}) {
-  const paths = defaultPaths(options.codex_home);
+function positiveIntegerOption(value, name, fallback) {
+  if (value == null) return fallback;
+  const number = Number(value);
+  if (!Number.isInteger(number) || number <= 0) throw new Error(`${name} must be a positive integer`);
+  return number;
+}
+
+function commandOptions(value, fallback) {
+  if (value == null) return fallback;
+  return optionValues(value).map((command) => {
+    const parts = String(command).split(/\s+/).filter(Boolean);
+    if (!parts.length) throw new Error("--web-search-command must not be empty");
+    return parts;
+  });
+}
+
+function resolvedConfigPath(options) {
+  if (options.config) return path.resolve(expandHome(options.config));
+  const codexHome = path.resolve(expandHome(options.codex_home ?? "~/.codex"));
+  return path.join(codexHome, "hydra", "config.toml");
+}
+
+export async function buildConfig(options = {}, { env = process.env } = {}) {
+  const configPath = resolvedConfigPath(options);
+  const legacySettingsPath = options.config ? null : path.join(path.dirname(configPath), "settings.json");
+  const ensured = await ensureHydraSettings(configPath, { legacySettingsPath, env });
+  const saved = await loadHydraSettings(configPath);
+  const paths = defaultPaths({
+    codexHome: options.codex_home ?? saved.codexHome,
+    configPath,
+    dataDir: saved.dataDir,
+  });
+  if (!options.config || ensured.created) await ensureSyntheticDefaults(paths);
+  const debugAuth = options.debug ? true : options.no_debug ? false : saved.debug;
+  const menubar = options.menubar ? true : options.no_menubar ? false : saved.menubar;
+  const appTools = options.app_tools ?? saved.appTools;
+  if (!new Set(["auto", "off"]).has(appTools)) throw new Error("--app-tools must be auto or off");
   return {
+    configPath,
     paths,
-    port: Number(options.port ?? process.env.HYDRA_PORT ?? 3847),
-    ollamaBaseUrl: options.ollama_url ?? process.env.OLLAMA_BASE_URL ?? "http://127.0.0.1:11434",
-    lmStudioBaseUrl:
-      options.lmstudio_url ?? process.env.LMSTUDIO_BASE_URL ?? "http://127.0.0.1:11239",
-    openaiBaseUrl:
-      options.openai_base_url ??
-      process.env.HYDRA_OPENAI_BASE_URL ??
-      "https://chatgpt.com/backend-api/codex",
-    appTools: options.app_tools ?? process.env.HYDRA_APP_TOOLS ?? "auto",
-    appToolServers: parseAppToolServers(options.app_tool_servers ?? process.env.HYDRA_APP_TOOL_SERVERS),
-    codexBin: options.codex_bin ?? process.env.HYDRA_CODEX_BIN ?? "codex",
-    debugAuth: Boolean(options.debug ?? process.env.HYDRA_DEBUG ?? process.env.HYDRA_DEBUG_AUTH),
-    noMenuBar: Boolean(options.no_menubar),
+    port: positiveIntegerOption(options.port, "--port", saved.port),
+    ollamaBaseUrl: options.ollama_url ?? saved.ollamaBaseUrl,
+    ollamaContextWindow: positiveIntegerOption(
+      options.ollama_context_window,
+      "--ollama-context-window",
+      saved.ollamaContextWindow,
+    ),
+    lmStudioBaseUrl: options.lmstudio_url ?? saved.lmStudioBaseUrl,
+    lmStudioContextWindow: positiveIntegerOption(
+      options.lmstudio_context_window,
+      "--lmstudio-context-window",
+      saved.lmStudioContextWindow,
+    ),
+    openaiBaseUrl: options.openai_base_url ?? saved.openaiBaseUrl,
+    openaiApiKey: saved.openaiApiKey,
+    appTools,
+    appToolServers: parseAppToolServers(options.app_tool_servers ?? saved.appToolServers),
+    codexBin: options.codex_bin ?? saved.codexBin,
+    webSearchCommands: commandOptions(options.web_search_command, saved.webSearchCommands),
+    debugAuth,
+    noMenuBar: !menubar,
   };
 }
 
@@ -130,7 +182,7 @@ export async function main() {
     return;
   }
 
-  const config = buildConfig(parsed.options);
+  const config = await buildConfig(parsed.options);
   config.version = hydraVersion;
   if (config.debugAuth) configureDebugLog(config.paths.logPath);
 
@@ -179,13 +231,12 @@ export async function main() {
   }
 
   if (parsed.command === "status") {
-    const saved = await loadHydraConfig(config.paths);
     console.log(
       JSON.stringify(
         {
           ...config,
+          openaiApiKey: config.openaiApiKey ? "<redacted>" : null,
           paths: config.paths,
-          saved,
         },
         null,
         2,
@@ -209,7 +260,7 @@ export async function main() {
     return;
   }
 
-  config.syntheticConfig = await loadSyntheticConfigWithDefaults(config.paths);
+  config.syntheticConfig = await loadSyntheticConfig(config.paths);
   config.installed = await isHydraInstalled(config);
   let menuBar = null;
   const reloadRuntimeView = async () => {
@@ -230,14 +281,15 @@ export async function main() {
     ollamaBaseUrl: config.ollamaBaseUrl,
     lmStudioBaseUrl: config.lmStudioBaseUrl,
     openaiBaseUrl: config.openaiBaseUrl,
-    apiKey: process.env.OPENAI_API_KEY,
+    apiKey: config.openaiApiKey,
+    webSearchCommands: config.webSearchCommands,
     debugAuth: config.debugAuth,
     appServerBridge,
     onSyntheticSelection: () => menuBar?.update(config),
     onReload: reloadRuntimeView,
   });
   config.syntheticState = handler.syntheticState;
-  config.emulatedToolStatuses = await emulatedToolStatuses();
+  config.emulatedToolStatuses = await emulatedToolStatuses(config.webSearchCommands);
   config.appToolStatus = await appServerBridge.status();
 
   if (config.debugAuth) {

@@ -167,13 +167,11 @@ test("does not advertise web search when local search is unavailable", async () 
   });
 });
 
-test("uses HYDRA_OLLAMA_CONTEXT_WINDOW before Ollama context metadata", async () => {
-  const original = process.env.HYDRA_OLLAMA_CONTEXT_WINDOW;
-  process.env.HYDRA_OLLAMA_CONTEXT_WINDOW = "12345";
-  try {
-    const result = await buildCatalog({
+test("uses the configured Ollama context window before provider metadata", async () => {
+  const result = await buildCatalog({
       sourceCatalog: { models: [{ slug: "gpt-test", display_name: "GPT Test", visibility: "list" }] },
       ollamaBaseUrl: "http://127.0.0.1:11434",
+      ollamaContextWindow: 12345,
       fetchImpl: async (url) => {
         if (url.pathname === "/api/tags") {
           return {
@@ -186,13 +184,9 @@ test("uses HYDRA_OLLAMA_CONTEXT_WINDOW before Ollama context metadata", async ()
           json: async () => ({ capabilities: [], model_info: { "model.context_length": 16384 } }),
         };
       },
-    });
+  });
 
-    assert.equal(result.catalog.models[1].context_window, 12345);
-  } finally {
-    if (original === undefined) delete process.env.HYDRA_OLLAMA_CONTEXT_WINDOW;
-    else process.env.HYDRA_OLLAMA_CONTEXT_WINDOW = original;
-  }
+  assert.equal(result.catalog.models[1].context_window, 12345);
 });
 
 test("keeps cloud catalog usable if Ollama is unavailable", async () => {

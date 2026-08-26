@@ -102,8 +102,8 @@ function capabilitySet(modelInfo) {
   return new Set(Array.isArray(modelInfo?.capabilities) ? modelInfo.capabilities : []);
 }
 
-function ollamaContextWindow(ollamaModel, modelInfo) {
-  const configured = Number(process.env.HYDRA_OLLAMA_CONTEXT_WINDOW);
+function ollamaContextWindow(ollamaModel, modelInfo, configuredContextWindow = null) {
+  const configured = Number(configuredContextWindow);
   if (Number.isFinite(configured) && configured > 0) return configured;
 
   const detailsContext = Number(ollamaModel.details?.context_length);
@@ -118,8 +118,8 @@ function ollamaContextWindow(ollamaModel, modelInfo) {
   return DEFAULT_LOCAL_CONTEXT_WINDOW;
 }
 
-function lmStudioContextWindow(model) {
-  const configured = Number(process.env.HYDRA_LMSTUDIO_CONTEXT_WINDOW);
+function lmStudioContextWindow(model, configuredContextWindow = null) {
+  const configured = Number(configuredContextWindow);
   if (Number.isFinite(configured) && configured > 0) return configured;
 
   for (const value of [
@@ -174,7 +174,12 @@ export function catalogModelTitles(catalog) {
   return Array.isArray(catalog?.models) ? catalog.models.map(catalogModelTitle) : [];
 }
 
-export function localModelFromTemplate(template, ollamaModel, priority, { modelInfo = null, webSearchReady = false } = {}) {
+export function localModelFromTemplate(
+  template,
+  ollamaModel,
+  priority,
+  { modelInfo = null, webSearchReady = false, contextWindow = null } = {},
+) {
   const name = ollamaModel.name || ollamaModel.model;
   const capabilities = routeCapabilities(modelInfo, webSearchReady);
   const model = cloneWithoutNux(template);
@@ -184,7 +189,7 @@ export function localModelFromTemplate(template, ollamaModel, priority, { modelI
   model.visibility = "list";
   model.supported_in_api = true;
   model.priority = priority;
-  model.context_window = ollamaContextWindow(ollamaModel, modelInfo);
+  model.context_window = ollamaContextWindow(ollamaModel, modelInfo, contextWindow);
   model.max_context_window = model.context_window;
   model.default_reasoning_level = capabilities.thinking ? THINKING_REASONING_LEVEL.effort : "none";
   model.supported_reasoning_levels = capabilities.thinking ? [THINKING_REASONING_LEVEL] : [];
@@ -200,7 +205,12 @@ export function localModelFromTemplate(template, ollamaModel, priority, { modelI
   return model;
 }
 
-export function lmStudioModelFromTemplate(template, lmStudioModel, priority, { webSearchReady = false } = {}) {
+export function lmStudioModelFromTemplate(
+  template,
+  lmStudioModel,
+  priority,
+  { webSearchReady = false, contextWindow = null } = {},
+) {
   const name = lmStudioModel.id;
   const capabilities = lmStudioRouteCapabilities(lmStudioModel, webSearchReady);
   const reasoningLevels = lmStudioReasoningLevels(lmStudioModel);
@@ -211,7 +221,7 @@ export function lmStudioModelFromTemplate(template, lmStudioModel, priority, { w
   model.visibility = "list";
   model.supported_in_api = true;
   model.priority = priority;
-  model.context_window = lmStudioContextWindow(lmStudioModel);
+  model.context_window = lmStudioContextWindow(lmStudioModel, contextWindow);
   model.max_context_window = model.context_window;
   model.default_reasoning_level = reasoningLevels.defaultLevel;
   model.supported_reasoning_levels = reasoningLevels.supportedLevels;
@@ -299,6 +309,8 @@ export async function buildCatalog({
   fetchImpl,
   webSearchReady = false,
   syntheticDefinitions = [],
+  ollamaContextWindow: configuredOllamaContextWindow = null,
+  lmStudioContextWindow: configuredLMStudioContextWindow = null,
 }) {
   if (!sourceCatalog?.models?.length) {
     throw new Error("Codex source catalog must contain at least one model");
@@ -324,10 +336,14 @@ export async function buildCatalog({
     localModelFromTemplate(template, model, 1000 + index, {
       modelInfo: ollamaModelInfo.get(model.name || model.model),
       webSearchReady,
+      contextWindow: configuredOllamaContextWindow,
     }),
   );
   const lmStudioCatalogModels = lmStudioModels.map((model, index) =>
-    lmStudioModelFromTemplate(template, model, 2000 + index, { webSearchReady }),
+    lmStudioModelFromTemplate(template, model, 2000 + index, {
+      webSearchReady,
+      contextWindow: configuredLMStudioContextWindow,
+    }),
   );
   const routes = {};
   for (const model of cloudModels) {
@@ -345,7 +361,7 @@ export async function buildCatalog({
       provider: "ollama",
       upstreamModel: name,
       capabilities: routeCapabilities(modelInfo, webSearchReady),
-      contextWindow: ollamaContextWindow(model, modelInfo),
+      contextWindow: ollamaContextWindow(model, modelInfo, configuredOllamaContextWindow),
     };
   }
   for (const model of lmStudioModels) {
@@ -353,7 +369,7 @@ export async function buildCatalog({
       provider: "lmstudio",
       upstreamModel: model.id,
       capabilities: lmStudioRouteCapabilities(model, webSearchReady),
-      contextWindow: lmStudioContextWindow(model),
+      contextWindow: lmStudioContextWindow(model, configuredLMStudioContextWindow),
     };
   }
 

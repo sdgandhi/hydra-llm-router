@@ -28,7 +28,7 @@ node src/cli.js prompt --model hydra/money-saver --input "Reply with hello"
 node src/cli.js session --model hydra/money-saver --input "Remember ORCHID" --input "What did I say?"
 ```
 
-Use `--ollama-url`, `--lmstudio-url`, `--openai-base-url`, `--port`, and the app-tool flags to override the defaults for a run. The equivalent persistent environment variables are listed below.
+Hydra reads persistent settings from `~/.codex/hydra/config.toml`. Use `--config <path>` with any command for an isolated development, test, or one-off profile. Command flags override the selected TOML file for that invocation.
 
 `install` backs up `~/.codex/config.toml`, refreshes the merged catalog, and points Codex Desktop at Hydra. `restore` writes the saved backup back.
 
@@ -69,7 +69,7 @@ For terminal-only use, `serve` can still run without a menu bar:
 node src/cli.js serve --no-menubar
 ```
 
-The menu bar and `models` command both show the detected catalog entries Hydra has written. The menu has a nested `Synthetic Models` view with each model's selector, candidates, fallback, routing scope, retry settings, and last in-memory target. Its `Refresh` action reloads configuration and clears routing locks; `Open Hydra Config` opens the synthetic-model TOML file. Local providers are queried during `refresh` or `install`; a provider that is offline or advertises no chat models contributes no direct catalog entries.
+The menu bar and `models` command both show the detected catalog entries Hydra has written. The menu has a nested `Synthetic Models` view with each model's selector, candidates, fallback, routing scope, retry settings, and last in-memory target. Its `Refresh` action reloads synthetic definitions and the catalog and clears routing locks; `Open Hydra Config` opens the unified TOML file. Local providers are queried during `refresh` or `install`; a provider that is offline or advertises no chat models contributes no direct catalog entries.
 
 After testing with debug mode, restart without debug logging:
 
@@ -114,7 +114,7 @@ Synthetic models are stable `hydra/` catalog entries whose JavaScript selector c
 
 Its concrete fallback is `gpt-5.6-sol`.
 
-Synthetic definitions live only in `~/.codex/hydra/config.toml`:
+Synthetic definitions live alongside Hydra's router settings in `~/.codex/hydra/config.toml`:
 
 ```toml
 [synthetic_models.money-saver]
@@ -149,7 +149,7 @@ The context contains the raw decoded Responses request, separated system/develop
 
 Hydra validates target capability and actual context fit, retries only the selected target, and then uses the configured fallback for selector errors or failures before response output. It never chooses another candidate on its own. Once response bytes are emitted, Hydra never changes models.
 
-Config and selector edits require a restart or:
+Synthetic model and selector edits can be applied with:
 
 ```sh
 node src/cli.js refresh
@@ -239,28 +239,64 @@ Do not forward Desktop OAuth tokens to `https://api.openai.com/v1`; that endpoin
 
 To explicitly use public OpenAI API-key forwarding instead:
 
-```sh
-HYDRA_OPENAI_BASE_URL=https://api.openai.com/v1
-OPENAI_API_KEY=sk-...
-node src/cli.js serve
+```toml
+[providers.openai]
+base_url = "https://api.openai.com/v1"
+api_key = "sk-..."
 ```
+
+The config file is forced to owner-only permissions because it may contain this key.
 
 ## Configuration
 
-Useful environment variables:
+All persistent runtime configuration lives in `~/.codex/hydra/config.toml`:
+
+```toml
+[hydra]
+port = 3847
+debug = false
+menubar = true
+data_dir = "."
+
+[codex]
+home = "~/.codex"
+binary = "codex"
+
+[providers.openai]
+base_url = "https://chatgpt.com/backend-api/codex"
+
+[providers.ollama]
+base_url = "http://127.0.0.1:11434"
+# context_window = 32768
+
+[providers.lmstudio]
+base_url = "http://127.0.0.1:11239"
+# context_window = 32768
+
+[app_tools]
+mode = "auto"
+servers = ["codex_apps"]
+
+[tools]
+web_search_commands = [
+  ["./bin/ddgr"],
+  ["ddgr"],
+  ["search"],
+  ["duckduckgo"],
+]
+```
+
+Relative `data_dir`, Codex binary, selector, and search-command paths resolve from the selected config file. Hydra uses the following precedence: command-line flags, then TOML, then built-in defaults. For example:
 
 ```sh
-HYDRA_PORT=3847
-OLLAMA_BASE_URL=http://127.0.0.1:11434
-LMSTUDIO_BASE_URL=http://127.0.0.1:11239
-HYDRA_OPENAI_BASE_URL=https://chatgpt.com/backend-api/codex
-OPENAI_API_KEY=...
-HYDRA_OLLAMA_CONTEXT_WINDOW=32768
-HYDRA_LMSTUDIO_CONTEXT_WINDOW=32768
-HYDRA_APP_TOOLS=auto
-HYDRA_APP_TOOL_SERVERS=codex_apps
-HYDRA_CODEX_BIN=codex
+node src/cli.js serve --config ./profiles/dev.toml --port 4847 --no-menubar
+node src/cli.js refresh --config ./profiles/dev.toml
+node src/cli.js install --config ./profiles/dev.toml
 ```
+
+An explicit config defaults generated state to its own directory, which keeps development and test profiles separate from `~/.codex/hydra/`. `codex.home` still determines which Codex installation `install` and `restore` modify. Router settings such as the port and provider URLs take effect when Hydra restarts; `refresh` reloads catalogs and synthetic definitions.
+
+On the first run after upgrading, Hydra imports legacy `settings.json` and supported Hydra environment-variable values into missing TOML sections, then removes `settings.json`. After migration, runtime settings come from TOML and flags. Release signing and notarization variables remain build-only inputs.
 
 Generated files live under:
 
@@ -272,8 +308,7 @@ Key files:
 
 - `hydra-models.json`: merged Codex + Ollama + LM Studio model catalog
 - `routes.json`: model slug to upstream route table
-- `settings.json`: last generated router settings
-- `config.toml`: global synthetic model definitions
+- `config.toml`: router settings and synthetic model definitions
 - `selectors/`: installed selector modules, including Money Saver
 - `config.backup.toml`: saved Codex config for restore
 - `hydra.pid`: running server pid

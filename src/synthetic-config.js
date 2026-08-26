@@ -4,6 +4,7 @@ import { constants as fsConstants } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parse } from "smol-toml";
+import { ensureHydraSettings } from "./hydra-config.js";
 
 export const SYNTHETIC_REASONING_LEVELS = [
   { effort: "low", description: "Use light reasoning." },
@@ -95,7 +96,8 @@ export async function parseSyntheticConfig(text, { configPath }) {
   }
 
   const topLevelKeys = Object.keys(parsed);
-  const unknownTopLevel = topLevelKeys.filter((key) => key !== "synthetic_models");
+  const allowedTopLevel = new Set(["hydra", "codex", "providers", "app_tools", "tools", "synthetic_models"]);
+  const unknownTopLevel = topLevelKeys.filter((key) => !allowedTopLevel.has(key));
   if (unknownTopLevel.length) throw new Error(`Unknown Hydra config key: ${unknownTopLevel[0]}`);
 
   const definitionsTable = parsed.synthetic_models ?? {};
@@ -175,6 +177,7 @@ export async function loadSyntheticConfig(paths, { allowMissing = true } = {}) {
 }
 
 export async function loadSyntheticConfigWithDefaults(paths) {
+  await ensureHydraSettings(paths.hydraConfigPath, { env: {} });
   await ensureSyntheticDefaults(paths);
   return loadSyntheticConfig(paths, { allowMissing: false });
 }

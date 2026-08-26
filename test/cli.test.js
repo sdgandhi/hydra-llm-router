@@ -1,5 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import {
   buildConfig,
   codexConfigArgs,
@@ -17,15 +20,89 @@ test("parses --no-menubar as a serve flag", () => {
   });
 });
 
-test("parses app tool bridge flags", () => {
+test("parses app tool bridge flags", async () => {
   assert.deepEqual(parseArgs(["serve", "--app-tools", "off", "--app-tool-servers", "codex_apps,node_repl"]), {
     command: "serve",
     options: { app_tools: "off", app_tool_servers: "codex_apps,node_repl" },
   });
-  const config = buildConfig({ app_tool_servers: "codex_apps,node_repl", codex_bin: "/tmp/codex" });
-  assert.equal(config.codexBin, "/tmp/codex");
-  assert.deepEqual(config.appToolServers, ["codex_apps", "node_repl"]);
-  assert.equal(config.lmStudioBaseUrl, "http://127.0.0.1:11239");
+  const root = await mkdtemp(path.join(tmpdir(), "hydra-cli-config-"));
+  try {
+    const config = await buildConfig(
+      {
+        config: path.join(root, "config.toml"),
+        app_tool_servers: "codex_apps,node_repl",
+        codex_bin: "/tmp/codex",
+      },
+      { env: {} },
+    );
+    assert.equal(config.codexBin, "/tmp/codex");
+    assert.deepEqual(config.appToolServers, ["codex_apps", "node_repl"]);
+    assert.equal(config.lmStudioBaseUrl, "http://127.0.0.1:11239");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("parses an explicit config path for any subcommand", () => {
+  assert.deepEqual(parseArgs(["status", "--config", "/tmp/hydra.toml"]), {
+    command: "status",
+    options: { config: "/tmp/hydra.toml" },
+  });
+});
+
+test("uses CLI overrides before TOML and ignores environment after config exists", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "hydra-cli-precedence-"));
+  const configPath = path.join(root, "config.toml");
+  try {
+    await writeFile(
+      configPath,
+      `[hydra]
+port = 4555
+debug = false
+menubar = false
+data_dir = "."
+
+[codex]
+home = "./codex"
+binary = "codex"
+
+[providers.openai]
+base_url = "https://config.example/v1"
+
+[providers.ollama]
+base_url = "http://config-ollama"
+
+[providers.lmstudio]
+base_url = "http://config-lmstudio"
+
+[app_tools]
+mode = "off"
+servers = ["codex_apps"]
+
+[tools]
+web_search_commands = [["search"]]
+`,
+    );
+    const config = await buildConfig(
+      { config: configPath, port: "4666", ollama_url: "http://flag-ollama" },
+      {
+        env: {
+          HYDRA_PORT: "4777",
+          OLLAMA_BASE_URL: "http://env-ollama",
+          HYDRA_OPENAI_BASE_URL: "https://env.example/v1",
+        },
+      },
+    );
+
+    assert.equal(config.port, 4666);
+    assert.equal(config.ollamaBaseUrl, "http://flag-ollama");
+    assert.equal(config.openaiBaseUrl, "https://config.example/v1");
+    assert.equal(config.lmStudioBaseUrl, "http://config-lmstudio");
+    assert.equal(config.noMenuBar, true);
+    assert.equal(config.paths.hydraDir, root);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test("parses debug and repeatable prompt inputs", () => {
