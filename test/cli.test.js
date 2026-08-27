@@ -11,7 +11,7 @@ import {
   runRouteCommand,
   shutdownHydra,
 } from "../src/cli.js";
-import { handleHelperLine, menuBarStatusItems } from "../src/menubar.js";
+import { handleHelperLine, menuBarStatusItems, menuModelOptions } from "../src/menubar.js";
 
 test("parses --no-menubar as a serve flag", () => {
   assert.deepEqual(parseArgs(["serve", "--no-menubar"]), {
@@ -189,6 +189,10 @@ test("serve status items match the menubar dropdown content", () => {
       { kind: "info", title: "Hydra Running" },
       { kind: "info", title: "Version: 0.1.0" },
       { kind: "info", title: "Codex routing: not installed" },
+      { kind: "action", id: "install", title: "Install Hydra in Codex" },
+      { kind: "action", id: "restore", title: "Restore Codex Config" },
+      { kind: "action", id: "refresh", title: "Refresh" },
+      { kind: "action", id: "open_config", title: "Open Hydra Config" },
       { kind: "separator" },
       {
         kind: "submenu",
@@ -201,7 +205,11 @@ test("serve status items match the menubar dropdown content", () => {
       {
         kind: "submenu",
         title: "Synthetic Models (0)",
-        items: [{ kind: "info", title: "No synthetic models" }],
+        items: [
+          { kind: "action", id: "new_synthetic", title: "New…" },
+          { kind: "separator" },
+          { kind: "info", title: "No synthetic models" },
+        ],
       },
       { kind: "separator" },
       { kind: "info", title: "Router: http://127.0.0.1:3847" },
@@ -215,11 +223,6 @@ test("serve status items match the menubar dropdown content", () => {
       { kind: "info", title: "App tools: codex_apps: 196 ready" },
       { kind: "info", title: "Debug log: /tmp/hydra.log" },
       { kind: "info", title: "Codex config: /tmp/config.toml" },
-      { kind: "separator" },
-      { kind: "action", id: "install", title: "Install Hydra in Codex" },
-      { kind: "action", id: "restore", title: "Restore Codex Config" },
-      { kind: "action", id: "refresh", title: "Refresh" },
-      { kind: "action", id: "open_config", title: "Open Hydra Config" },
     ],
   );
 });
@@ -241,6 +244,7 @@ test("menubar shows synthetic config and last target", () => {
           slug: "hydra/smart",
           displayName: "Hydra: Smart",
           selector: "selectors/smart.js",
+          selectorPath: "/tmp/hydra/selectors/smart.js",
           candidates: ["ollama/tiny"],
           fallbackModel: "gpt-test",
           routingScope: "user_turn",
@@ -255,8 +259,27 @@ test("menubar shows synthetic config and last target", () => {
     paths: { logPath: "/tmp/log", codexConfigPath: "/tmp/codex", hydraConfigPath: "/tmp/hydra/config.toml" },
   });
   const synthetic = items.find((item) => item.title === "Synthetic Models (1)");
-  assert.equal(synthetic.items[0].title, "hydra/smart");
-  assert.equal(synthetic.items[0].items.at(-1).title, "Last: gpt-test");
+  assert.equal(synthetic.items[0].title, "New…");
+  assert.equal(synthetic.items[2].title, "hydra/smart");
+  assert.deepEqual(synthetic.items[2].items[1], {
+    kind: "reveal",
+    title: "Selector: selectors/smart.js",
+    path: "/tmp/hydra/selectors/smart.js",
+  });
+  assert.equal(synthetic.items[2].items.at(-1).title, "Last: gpt-test");
+});
+
+test("menubar offers only direct models to the synthetic model form", () => {
+  assert.deepEqual(menuModelOptions({
+    models: [
+      { slug: "hydra/money-saver", display_name: "Hydra: Money Saver" },
+      { slug: "gpt-test", display_name: "GPT Test" },
+      { slug: "ollama/tiny" },
+    ],
+  }), [
+    { slug: "gpt-test", title: "GPT Test (gpt-test)" },
+    { slug: "ollama/tiny", title: "ollama/tiny" },
+  ]);
 });
 
 test("menubar dispatches install and restore actions", () => {
@@ -268,6 +291,15 @@ test("menubar dispatches install and restore actions", () => {
   handleHelperLine('{"type":"action","id":"install"}', handlers);
   handleHelperLine('{"type":"action","id":"restore"}', handlers);
   assert.deepEqual(calls, ["install", "restore"]);
+});
+
+test("menubar dispatches synthetic model creation payloads", () => {
+  let received;
+  handleHelperLine(
+    '{"type":"create_synthetic","requestId":"request-1","model":{"name":"Smart"}}',
+    { onCreateSynthetic: (model, requestId) => { received = { model, requestId }; } },
+  );
+  assert.deepEqual(received, { model: { name: "Smart" }, requestId: "request-1" });
 });
 
 test("menu quit restores config, closes the server, removes pid, and stops helper", async () => {

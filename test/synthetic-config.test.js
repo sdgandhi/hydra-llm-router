@@ -4,11 +4,13 @@ import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
+  createPromptSyntheticModel,
   ensureSyntheticDefaults,
   loadSyntheticConfigWithDefaults,
   normalizeSyntheticSlug,
   parseSyntheticConfig,
 } from "../src/synthetic-config.js";
+import { runSyntheticSelector } from "../src/synthetic.js";
 
 test("normalizes synthetic slugs under the Hydra namespace", () => {
   assert.equal(normalizeSyntheticSlug("money-saver"), "hydra/money-saver");
@@ -103,4 +105,84 @@ test("first serve preparation creates and loads Money Saver", async () => {
   const result = await loadSyntheticConfigWithDefaults(paths);
   assert.equal(result.definitions.length, 1);
   assert.equal(result.definitions[0].slug, "hydra/money-saver");
+});
+
+test("creates a prompt-routed model from the bundled selector template", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "hydra-synthetic-create-"));
+  const paths = {
+    hydraConfigPath: path.join(root, "config.toml"),
+    selectorsDir: path.join(root, "selectors"),
+  };
+  await writeFile(paths.hydraConfigPath, "");
+  const created = await createPromptSyntheticModel(paths, {
+    name: "My Smart Model",
+    candidates: ["ollama/tiny"],
+    fallbackModel: "gpt-test",
+    selectorModel: "gpt-test",
+    selectorPrompt: "Choose the smallest suitable model.",
+    routingScope: "conversation",
+    timeoutSeconds: 1.5,
+    retryCount: 3,
+    retryDelayMs: 25,
+  }, { availableModels: ["ollama/tiny", "gpt-test"] });
+
+  assert.equal(created.slug, "hydra/my-smart-model");
+  const loaded = await parseSyntheticConfig(await readFile(paths.hydraConfigPath, "utf8"), {
+    configPath: paths.hydraConfigPath,
+  });
+  const definition = loaded.definitions[0];
+  assert.equal(definition.routingScope, "conversation");
+  assert.equal(definition.selectorTimeoutMs, 1500);
+  assert.equal(definition.retryCount, 3);
+  assert.equal(definition.retryDelayMs, 25);
+
+  let classifierRequest;
+  const target = await runSyntheticSelector({
+    definition,
+    context: {
+      messages: { latestUser: { content: "hello" } },
+      features: { actualContextTokens: 10 },
+      candidates: [{ slug: "ollama/tiny", fallback: false }],
+      machine: {},
+      providers: {},
+    },
+    callModel: async (request) => {
+      classifierRequest = request;
+      return "ollama/tiny";
+    },
+  });
+  assert.equal(target, "ollama/tiny");
+  assert.equal(classifierRequest.model, "gpt-test");
+  assert.match(classifierRequest.prompt, /Choose the smallest suitable model/);
+  assert.match(classifierRequest.prompt, /Allowed generation models: ollama\/tiny/);
+
+  await assert.rejects(
+    createPromptSyntheticModel(paths, {
+      name: "My Smart Model",
+      candidates: ["ollama/tiny"],
+      fallbackModel: "gpt-test",
+      selectorModel: "gpt-test",
+      selectorPrompt: "Again",
+    }, { availableModels: ["ollama/tiny", "gpt-test"] }),
+    /already exists/,
+  );
+});
+
+test("rejects unavailable models when creating a prompt-routed model", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "hydra-synthetic-create-invalid-"));
+  const paths = {
+    hydraConfigPath: path.join(root, "config.toml"),
+    selectorsDir: path.join(root, "selectors"),
+  };
+  await writeFile(paths.hydraConfigPath, "");
+  await assert.rejects(
+    createPromptSyntheticModel(paths, {
+      name: "Invalid",
+      candidates: ["missing"],
+      fallbackModel: "gpt-test",
+      selectorModel: "gpt-test",
+      selectorPrompt: "Choose",
+    }, { availableModels: ["gpt-test"] }),
+    /not an available model/,
+  );
 });

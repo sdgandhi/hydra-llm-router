@@ -132,6 +132,37 @@ test("times out selectors and validates target capabilities", async () => {
   );
 });
 
+test("aborts an in-flight selector model call when the selector times out", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "hydra-selector-model-timeout-"));
+  const selectorPath = path.join(dir, "selector.js");
+  await writeFile(
+    selectorPath,
+    'export default () => globalThis.__hydraCallSelectorModel({ model: "gpt-test", prompt: "choose" });\n',
+  );
+  const source = await readFile(selectorPath);
+  const definition = {
+    ...definitionFixture(),
+    selectorPath,
+    selectorHash: createHash("sha256").update(source).digest("hex"),
+    selectorTimeoutMs: 20,
+  };
+  let aborted = false;
+  await assert.rejects(
+    runSyntheticSelector({
+      definition,
+      context: {},
+      callModel: ({ signal }) => new Promise((resolve, reject) => {
+        signal.addEventListener("abort", () => {
+          aborted = true;
+          reject(signal.reason);
+        }, { once: true });
+      }),
+    }),
+    /timed out/,
+  );
+  assert.equal(aborted, true);
+});
+
 function definitionFixture() {
   return {
     slug: "hydra/smart",

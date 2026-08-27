@@ -1,11 +1,31 @@
+import { randomUUID } from "node:crypto";
 import { parentPort, workerData } from "node:worker_threads";
 import { pathToFileURL } from "node:url";
 
 const controller = new AbortController();
+const modelCalls = new Map();
 parentPort.on("message", (message) => {
   if (message?.type === "abort" && !controller.signal.aborted) {
     controller.abort(new DOMException(message.reason ?? "Selector cancelled", "AbortError"));
   }
+  if (message?.type === "model_call_result") {
+    const pending = modelCalls.get(message.id);
+    if (!pending) return;
+    modelCalls.delete(message.id);
+    if (message.error) {
+      const error = new Error(message.error.message ?? "Selector model call failed");
+      error.code = message.error.code;
+      pending.reject(error);
+    } else {
+      pending.resolve(message.result);
+    }
+  }
+});
+
+globalThis.__hydraCallSelectorModel = ({ model, prompt }) => new Promise((resolve, reject) => {
+  const id = randomUUID();
+  modelCalls.set(id, { resolve, reject });
+  parentPort.postMessage({ type: "model_call", id, model, prompt });
 });
 
 try {

@@ -308,11 +308,13 @@ Package and relative import resolution is rooted in the selector module's direct
 
 Hydra must display a security warning in user documentation near the configuration instructions. A worker thread is an isolation and responsiveness mechanism, not a security sandbox.
 
-### No model-call helper
+### Model calls
 
 The selector context does not expose `generate()`, `callModel()`, or an equivalent model invocation API. If a selector wants to use an LLM classifier, it directly calls the desired server/API using ordinary JavaScript, then returns the chosen generation model slug.
 
 Only the model returned by the selector performs the actual user-visible generation. Any calls made inside selector code are selector implementation details and are not routed, retried, or interpreted by Hydra.
+
+The menu-bar prompt-router template is a narrow exception added on 2026-08-27. It uses a private worker RPC—not a context API—to ask Hydra to invoke the configured direct selector model. This is required so generated selectors can use cloud models with Desktop's existing OAuth without exposing authorization headers to selector context. The RPC accepts one direct model slug and prompt and returns classifier text; generated selector code must still return exactly one allowed generation slug. It rejects synthetic selector models, inherits request cancellation and selector timeout, and logs only model/status/size metadata under `--debug`. It is an implementation detail of the bundled template, not a supported general selector SDK.
 
 ## Selector context
 
@@ -681,10 +683,23 @@ The menu bar adds a top-level `Synthetic Models` submenu. Each active synthetic 
 
 It does not show cost estimates, savings, token totals, selection counts, or historical analytics.
 
-The synthetic menu provides two actions:
+The synthetic menu begins with a **New…** action followed by a divider and the configured model list. New opens a separate modal titled **New Hydra synthetic model** with:
+
+- Name.
+- Candidate model checkboxes containing every available direct server or local model; at least one is required.
+- Required fallback and selector-model dropdowns using the same direct model list.
+- A required multiline selector prompt.
+- Scope (`user_turn` or `conversation`, default `user_turn`).
+- Timeout in seconds (`0` disables it, default `0`).
+- Retry count and delay in milliseconds (defaults `2` and `1000`).
+
+Save remains disabled until required fields and numeric values are valid. On Save, Hydra validates the form again, rejects a duplicate normalized `hydra/` slug, exclusively creates a selector from the bundled prompt-router template under `selectors/`, atomically appends the definition to `config.toml`, and refreshes the catalog and runtime state. Creation failure leaves the modal open with an error and does not leave a partial selector/config pair. Clicking a configured selector row reveals and highlights its file in Finder.
+
+The general menu provides these actions immediately below **Codex routing**:
 
 - **Refresh**: runs the equivalent of `hydra refresh`, updates the catalog/config snapshot, clears routing locks and last-selection state, and refreshes the displayed menu state.
 - **Open Config**: opens `~/.codex/hydra/config.toml` in the system-associated editor.
+- **Install Hydra in Codex** and **Restore Codex Config** retain their existing behavior.
 
 Last selection is memory-only and resets on restart or refresh. Models omitted because their selector file is missing do not appear as usable synthetic models; the debug log records why they were omitted.
 
@@ -819,6 +834,15 @@ The implementation was verified without relying on Codex Desktop UI state:
 7. Confirmed unit/integration coverage for user-turn tool stickiness, conversation locking, retries, fallback, delayed commitment, post-output failure, refresh, menu state, and selector errors.
 8. Ran all 100 tests and the prescribed syntax checks successfully.
 
+### Menu-bar authoring verification (completed 2026-08-27)
+
+1. Generated isolated prompt-router definitions and modules through the same backend used by the modal, refreshed them into a live 34–36 model catalog, and verified duplicate and unavailable-model validation.
+2. Used an LM Studio selector model to dry-route a generated model to `lmstudio/liquid/lfm2.5-1.2b`.
+3. Used the LM Studio selector to route full `hydra prompt` generation and a conversation-scoped two-turn `hydra session` to `lmstudio/google/gemma-4-26b-a4b-qat`; the second turn recalled the first-turn codeword.
+4. Used `gpt-5.4-mini` with Desktop OAuth as a cloud selector model and completed a local target generation.
+5. Confirmed debug records include selector-model provider, model, input/output sizes, status 200, selected/ultimate routes, and no prompt or output content.
+6. Passed all 116 tests, Swift type checking, prescribed JavaScript syntax checks, and a signed development DMG build against the macOS 13 deployment target.
+
 ## Acceptance criteria
 
 The feature is complete when:
@@ -834,7 +858,7 @@ The feature is complete when:
 9. No model switch occurs after downstream output begins.
 10. Capabilities are conservatively advertised, context is maximized in the catalog, and actual request fit is checked at runtime.
 11. Money Saver is installed automatically and maps classifier scores to the three required models.
-12. The menu bar shows synthetic configuration and last routing state and provides Refresh and Open Config actions.
+12. The menu bar shows synthetic configuration and last routing state, creates prompt-routed synthetic models with the required modal, reveals selector files in Finder, and places routing actions immediately below Codex routing status.
 13. `hydra route` performs selector evaluation through the running server and prints the target without generating an answer.
 14. `--debug` records complete non-content routing diagnostics in `hydra.log` and does not leak prohibited data.
 15. The server-state compatibility decision is documented with live evidence and its required locking behavior is tested.

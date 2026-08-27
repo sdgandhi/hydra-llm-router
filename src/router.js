@@ -1901,6 +1901,127 @@ function safeSyntheticError(error) {
   return { name: error?.name ?? "Error", code: error?.code, stage: error?.hydraStage };
 }
 
+function responseOutputText(data) {
+  if (typeof data?.output_text === "string") return data.output_text;
+  return (Array.isArray(data?.output) ? data.output : [])
+    .flatMap((item) => (Array.isArray(item?.content) ? item.content : []))
+    .map((part) => part?.text ?? part?.output_text ?? "")
+    .join("");
+}
+
+async function callSelectorModel({
+  model,
+  prompt,
+  req,
+  routes,
+  ollamaBaseUrl,
+  lmStudioBaseUrl,
+  openaiBaseUrl,
+  apiKey,
+  signal,
+  debugAuth,
+  source,
+  syntheticModel,
+}) {
+  if (typeof model !== "string" || !model.trim() || typeof prompt !== "string" || !prompt) {
+    const error = new Error("Invalid selector model call");
+    error.code = "HYDRA_SELECTOR_MODEL_REQUEST";
+    throw error;
+  }
+  const route = routes[model];
+  if (!route || route.provider === "synthetic") {
+    const error = new Error("Selector model is unavailable");
+    error.code = "HYDRA_SELECTOR_MODEL_UNAVAILABLE";
+    throw error;
+  }
+
+  let url;
+  let headers = { "content-type": "application/json", accept: "application/json" };
+  let upstreamBody;
+  if (route.provider === "ollama") {
+    url = new URL("/api/chat", ollamaBaseUrl);
+    upstreamBody = {
+      model: route.upstreamModel,
+      messages: [{ role: "user", content: prompt }],
+      stream: false,
+      think: false,
+    };
+  } else if (route.provider === "lmstudio") {
+    url = new URL("/v1/chat/completions", lmStudioBaseUrl);
+    upstreamBody = {
+      model: route.upstreamModel,
+      messages: [{ role: "user", content: prompt }],
+      stream: false,
+      temperature: 0,
+      max_tokens: 256,
+      reasoning_effort: "none",
+      chat_template_kwargs: { enable_thinking: false },
+      request_id: `hydra-selector-${randomUUID()}`,
+    };
+  } else {
+    url = upstreamResponsesUrl("/responses", openaiBaseUrl);
+    headers = forwardedHeaders(req.headers);
+    headers["content-type"] = "application/json";
+    headers.accept = "application/json";
+    if (apiKey) headers.authorization = `Bearer ${apiKey}`;
+    else if (req.headers.authorization) headers.authorization = req.headers.authorization;
+    upstreamBody = { model: route.upstreamModel, input: prompt, stream: false, store: false };
+  }
+
+  const requestText = JSON.stringify(upstreamBody);
+  debugLogSynthetic({
+    enabled: debugAuth,
+    event: "selector-model-request",
+    payload: {
+      source,
+      syntheticModel,
+      selectorModel: model,
+      provider: route.provider,
+      promptChars: prompt.length,
+      requestBytes: Buffer.byteLength(requestText),
+    },
+  });
+  const response = await fetch(url, { method: "POST", headers, body: requestText, signal });
+  signal.throwIfAborted();
+  let data;
+  try {
+    data = await response.json();
+  } catch {
+    const error = new Error("Selector model returned an invalid response");
+    error.code = "HYDRA_SELECTOR_MODEL_RESPONSE";
+    throw error;
+  }
+  if (!response.ok) {
+    const error = new Error("Selector model request failed");
+    error.code = "HYDRA_SELECTOR_MODEL_UPSTREAM";
+    error.status = response.status;
+    throw error;
+  }
+  const output = route.provider === "ollama"
+    ? data?.message?.content
+    : route.provider === "lmstudio"
+      ? lmStudioMessageText(data?.choices?.[0]?.message?.content)
+      : responseOutputText(data);
+  if (typeof output !== "string" || !output.trim()) {
+    const error = new Error("Selector model returned no output");
+    error.code = "HYDRA_SELECTOR_MODEL_OUTPUT";
+    throw error;
+  }
+  debugLogSynthetic({
+    enabled: debugAuth,
+    event: "selector-model-response",
+    payload: {
+      source,
+      syntheticModel,
+      selectorModel: model,
+      provider: route.provider,
+      status: response.status,
+      outputChars: output.length,
+    },
+  });
+  return stripLocalControlMarkers(output).trim();
+}
+
 async function runDirectAttempts({
   targetSlug,
   phase,
@@ -2035,7 +2156,25 @@ async function handleSyntheticRequest({
     signal.throwIfAborted();
     const selectorStartedAt = performance.now();
     try {
-      const result = await runSyntheticSelector({ definition, context, signal });
+      const result = await runSyntheticSelector({
+        definition,
+        context,
+        signal,
+        callModel: ({ model, prompt, signal: selectorSignal }) => callSelectorModel({
+          model,
+          prompt,
+          req,
+          routes,
+          ollamaBaseUrl,
+          lmStudioBaseUrl,
+          openaiBaseUrl,
+          apiKey,
+          signal: selectorSignal,
+          debugAuth,
+          source,
+          syntheticModel: definition.slug,
+        }),
+      });
       const selected = validateSelectorTarget({ definition, target: result, context, routes });
       selectedSlug = selected.slug;
       effectiveEffort = effectiveReasoningEffort(selected.route, requestedEffort);

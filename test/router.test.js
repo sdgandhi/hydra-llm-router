@@ -1550,6 +1550,99 @@ test("retries a selected synthetic target then uses its concrete fallback", asyn
   }
 });
 
+test("lets a prompt selector call a configured direct classifier model", async () => {
+  const tempDir = await mkdtemp(join(tmpdir(), "hydra-selector-model-router-"));
+  const routesPath = join(tempDir, "routes.json");
+  const selectorPath = join(tempDir, "selector.js");
+  const selectorSource = `export default async () =>
+    globalThis.__hydraCallSelectorModel({ model: "lmstudio/classifier", prompt: "choose" });\n`;
+  await writeFile(selectorPath, selectorSource);
+  await writeFile(routesPath, JSON.stringify({
+    "lmstudio/classifier": {
+      provider: "lmstudio",
+      upstreamModel: "classifier",
+      capabilities: { tools: false, vision: false, thinking: false },
+      contextWindow: 4096,
+    },
+    "ollama/tiny": {
+      provider: "ollama",
+      upstreamModel: "tiny",
+      capabilities: { tools: true, vision: false, thinking: false },
+      contextWindow: 4096,
+    },
+    "gpt-test": {
+      provider: "openai",
+      upstreamModel: "gpt-test",
+      capabilities: { tools: true, vision: true, thinking: true },
+      contextWindow: 100000,
+    },
+    "hydra/prompt-router": {
+      provider: "synthetic",
+      definition: {
+        slug: "hydra/prompt-router",
+        selectorPath,
+        selectorHash: createHash("sha256").update(selectorSource).digest("hex"),
+        candidates: ["ollama/tiny"],
+        fallbackModel: "gpt-test",
+        effectiveCandidates: ["ollama/tiny", "gpt-test"],
+        routingScope: "user_turn",
+        stickyToolContinuations: true,
+        selectorTimeoutMs: 1000,
+        retryCount: 0,
+        retryDelayMs: 0,
+      },
+    },
+  }));
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  let hydra;
+  globalThis.fetch = async (url, options) => {
+    calls.push({ url: String(url), body: JSON.parse(options.body) });
+    if (String(url).endsWith("/v1/chat/completions")) {
+      return new Response(JSON.stringify({ choices: [{ message: { content: "ollama/tiny" } }] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (String(url).endsWith("/api/chat")) {
+      return new Response(JSON.stringify({ message: { content: "routed locally" } }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    throw new Error(`Unexpected upstream: ${url}`);
+  };
+  try {
+    const handler = createHydraHandler({
+      paths: { routesPath },
+      ollamaBaseUrl: "http://127.0.0.1:11434",
+      lmStudioBaseUrl: "http://127.0.0.1:11239",
+      openaiBaseUrl: "https://chatgpt.com/backend-api/codex",
+      syntheticContextOptions: syntheticContextFixture(),
+    });
+    hydra = createHttpServer(handler);
+    hydra.listen(0, "127.0.0.1");
+    await once(hydra, "listening");
+    const response = await originalFetch(`http://127.0.0.1:${hydra.address().port}/responses`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "session-id": "classifier-session" },
+      body: JSON.stringify({ model: "hydra/prompt-router", input: "hello", stream: false }),
+    });
+    assert.equal(response.status, 200);
+    assert.equal((await response.json()).output[0].content[0].text, "routed locally");
+    assert.equal(calls[0].body.model, "classifier");
+    assert.equal(calls[0].body.chat_template_kwargs.enable_thinking, false);
+    assert.equal(calls[1].body.model, "tiny");
+  } finally {
+    if (hydra?.listening) {
+      hydra.close();
+      await Promise.allSettled([once(hydra, "close")]);
+    }
+    globalThis.fetch = originalFetch;
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
 test("locks conversation-scoped synthetic routes to the first successful model", async () => {
   const tempDir = await mkdtemp(join(tmpdir(), "hydra-synthetic-session-"));
   const routesPath = join(tempDir, "routes.json");

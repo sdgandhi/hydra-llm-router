@@ -10,7 +10,7 @@ export function shouldStartMenuBar({ platform = process.platform, noMenuBar = fa
 
 export function startMenuBar(
   config,
-  { onQuit, onRefresh, onInstall, onRestore, spawnImpl = spawn } = {},
+  { onQuit, onRefresh, onInstall, onRestore, onCreateSynthetic, spawnImpl = spawn } = {},
 ) {
   if (!shouldStartMenuBar({ noMenuBar: config.noMenuBar })) return null;
 
@@ -25,6 +25,9 @@ export function startMenuBar(
   });
 
   let stdoutBuffer = "";
+  const send = (message) => {
+    if (!child.killed && child.stdin.writable) child.stdin.write(`${JSON.stringify(message)}\n`);
+  };
   child.stdout.setEncoding("utf8");
   child.stdout.on("data", (chunk) => {
     stdoutBuffer += chunk;
@@ -32,7 +35,25 @@ export function startMenuBar(
     stdoutBuffer = lines.pop() ?? "";
     for (const line of lines) {
       if (!line.trim()) continue;
-      handleHelperLine(line, { onQuit, onRefresh, onInstall, onRestore });
+      handleHelperLine(line, {
+        onQuit,
+        onRefresh,
+        onInstall,
+        onRestore,
+        onCreateSynthetic: async (input, requestId) => {
+          try {
+            const result = await onCreateSynthetic?.(input);
+            send({ type: "create_synthetic_result", requestId, ok: true, ...result });
+          } catch (error) {
+            send({
+              type: "create_synthetic_result",
+              requestId,
+              ok: false,
+              error: error?.message ?? "Could not create synthetic model",
+            });
+          }
+        },
+      });
     }
   });
 
@@ -49,9 +70,7 @@ export function startMenuBar(
 
   return {
     update(nextConfig) {
-      if (!child.killed && child.stdin.writable) {
-        child.stdin.write(`${JSON.stringify({ type: "update", info: menuBarPayload(nextConfig) })}\n`);
-      }
+      send({ type: "update", info: menuBarPayload(nextConfig) });
     },
     stop() {
       if (!child.killed) child.kill("SIGTERM");
@@ -65,6 +84,10 @@ export function menuBarStatusItems(config) {
     { kind: "info", title: "Hydra Running" },
     { kind: "info", title: `Version: ${config.version ?? "development"}` },
     { kind: "info", title: `Codex routing: ${config.installed ? "installed" : "not installed"}` },
+    { kind: "action", id: "install", title: "Install Hydra in Codex" },
+    { kind: "action", id: "restore", title: "Restore Codex Config" },
+    { kind: "action", id: "refresh", title: "Refresh" },
+    { kind: "action", id: "open_config", title: "Open Hydra Config" },
     { kind: "separator" },
     {
       kind: "submenu",
@@ -87,11 +110,6 @@ export function menuBarStatusItems(config) {
     { kind: "info", title: config.debugAuth ? `Debug log: ${config.paths.logPath}` : "Debug logging: off" },
     { kind: "info", title: `Codex config: ${config.paths.codexConfigPath}` },
     ...(config.menuNotice ? [{ kind: "info", title: config.menuNotice }] : []),
-    { kind: "separator" },
-    { kind: "action", id: "install", title: "Install Hydra in Codex" },
-    { kind: "action", id: "restore", title: "Restore Codex Config" },
-    { kind: "action", id: "refresh", title: "Refresh" },
-    { kind: "action", id: "open_config", title: "Open Hydra Config" },
   );
   return items;
 }
@@ -106,7 +124,7 @@ function syntheticModelsMenu(config) {
       title: definition.slug,
       items: [
         { kind: "info", title: definition.displayName },
-        { kind: "info", title: `Selector: ${definition.selector}` },
+        { kind: "reveal", title: `Selector: ${definition.selector}`, path: definition.selectorPath },
         { kind: "info", title: `Candidates: ${definition.candidates.join(", ")}` },
         { kind: "info", title: `Fallback: ${definition.fallbackModel}` },
         { kind: "info", title: `Scope: ${definition.routingScope}` },
@@ -120,8 +138,24 @@ function syntheticModelsMenu(config) {
   return {
     kind: "submenu",
     title: `Synthetic Models (${definitions.length})`,
-    items: children.length ? children : [{ kind: "info", title: "No synthetic models" }],
+    items: [
+      { kind: "action", id: "new_synthetic", title: "New…" },
+      { kind: "separator" },
+      ...(children.length ? children : [{ kind: "info", title: "No synthetic models" }]),
+    ],
   };
+}
+
+export function menuModelOptions(catalog) {
+  return (catalog?.models ?? [])
+    .filter((model) => typeof model?.slug === "string" && !model.slug.startsWith("hydra/"))
+    .map((model) => ({
+      slug: model.slug,
+      title: model.display_name && model.display_name !== model.slug
+        ? `${model.display_name} (${model.slug})`
+        : model.slug,
+    }))
+    .sort((left, right) => left.title.localeCompare(right.title));
 }
 
 function emulatedToolsLabel(statuses) {
@@ -143,7 +177,7 @@ function appToolsLabel(status) {
   return `${servers}: ${status.status}${detail}`;
 }
 
-export function handleHelperLine(line, { onQuit, onRefresh, onInstall, onRestore }) {
+export function handleHelperLine(line, { onQuit, onRefresh, onInstall, onRestore, onCreateSynthetic }) {
   let message;
   try {
     message = JSON.parse(line);
@@ -154,6 +188,7 @@ export function handleHelperLine(line, { onQuit, onRefresh, onInstall, onRestore
   if (message?.type === "action" && message.id === "install") onInstall?.();
   if (message?.type === "action" && message.id === "restore") onRestore?.();
   if (message?.type === "action" && message.id === "refresh") onRefresh?.();
+  if (message?.type === "create_synthetic") onCreateSynthetic?.(message.model, message.requestId);
 }
 
 function menuBarPayload(config) {
@@ -161,6 +196,8 @@ function menuBarPayload(config) {
     title: "Hydra",
     iconPath: path.join(path.dirname(fileURLToPath(import.meta.url)), "hydra-menubar.png"),
     configPath: config.paths.hydraConfigPath,
+    availableModels: menuModelOptions(config.catalog),
+    existingSyntheticSlugs: (config.syntheticConfig?.definitions ?? []).map((definition) => definition.slug),
     statusItems: menuBarStatusItems(config),
   };
 }

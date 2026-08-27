@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { access, copyFile, mkdir, readFile, writeFile } from "node:fs/promises";
+import { access, copyFile, mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { constants as fsConstants } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -40,6 +40,12 @@ const ALLOWED_DEFINITION_KEYS = new Set([
   "retry_count",
   "retry_delay_ms",
 ]);
+
+const PROMPT_SELECTOR_TEMPLATE = path.join(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "selectors",
+  "prompt-router.template.js",
+);
 
 export function normalizeSyntheticSlug(value) {
   const text = String(value ?? "").trim();
@@ -208,4 +214,139 @@ export async function ensureSyntheticDefaults(paths) {
   const separator = existing.endsWith("\n") ? "\n" : "\n\n";
   await writeFile(paths.hydraConfigPath, `${existing}${separator}${MONEY_SAVER_DEFINITION}\n`);
   return { created: false, addedMoneySaver: true };
+}
+
+function generatedSyntheticSlug(name) {
+  const enteredName = requiredString(name, "Name");
+  const displayName = enteredName.startsWith("hydra/") ? enteredName.slice("hydra/".length) : enteredName;
+  const raw = displayName;
+  const normalized = raw
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^[._-]+|[._-]+$/g, "");
+  return { displayName, slug: normalizeSyntheticSlug(normalized) };
+}
+
+function availableDirectModel(value, field, availableModels) {
+  const slug = directModelSlug(value, field);
+  if (!availableModels.has(slug)) throw new Error(`${field} is not an available model: ${slug}`);
+  return slug;
+}
+
+function tomlString(value) {
+  return JSON.stringify(value);
+}
+
+function generatedDefinition({
+  slug,
+  displayName,
+  selector,
+  candidates,
+  fallbackModel,
+  selectorModel,
+  routingScope,
+  selectorTimeoutMs,
+  retryCount,
+  retryDelayMs,
+}) {
+  const name = slug.slice("hydra/".length);
+  return `[synthetic_models.${tomlString(name)}]
+display_name = ${tomlString(`Hydra: ${displayName}`)}
+description = ${tomlString(`Prompt-routed using ${selectorModel}.`)}
+selector = ${tomlString(selector)}
+candidates = ${JSON.stringify(candidates)}
+fallback_model = ${tomlString(fallbackModel)}
+routing_scope = ${tomlString(routingScope)}
+sticky_tool_continuations = true
+selector_timeout_ms = ${selectorTimeoutMs}
+retry_count = ${retryCount}
+retry_delay_ms = ${retryDelayMs}
+`;
+}
+
+/**
+ * Create a prompt-routed synthetic model from the bundled selector template.
+ * Selector JavaScript is fully trusted and intentionally has the same access as Hydra.
+ */
+export async function createPromptSyntheticModel(paths, input, { availableModels = [] } = {}) {
+  const available = new Set(availableModels.map((model) => directModelSlug(model, "availableModels[]")));
+  const { displayName, slug } = generatedSyntheticSlug(input?.name);
+  const candidatesInput = input?.candidates;
+  if (!Array.isArray(candidatesInput) || candidatesInput.length === 0) {
+    throw new Error("Candidate models must include at least one model");
+  }
+  const candidates = [...new Set(candidatesInput.map((candidate, index) =>
+    availableDirectModel(candidate, `Candidate models[${index}]`, available),
+  ))];
+  const fallbackModel = availableDirectModel(input?.fallbackModel, "Fallback model", available);
+  const selectorModel = availableDirectModel(input?.selectorModel, "Selector model", available);
+  const selectorPrompt = requiredString(input?.selectorPrompt, "Selector prompt");
+  const routingScope = input?.routingScope ?? "user_turn";
+  if (!new Set(["user_turn", "conversation"]).has(routingScope)) {
+    throw new Error("Scope must be user_turn or conversation");
+  }
+  const timeoutSeconds = Number(input?.timeoutSeconds ?? 0);
+  if (!Number.isFinite(timeoutSeconds) || timeoutSeconds < 0) {
+    throw new Error("Timeout must be a nonnegative number of seconds");
+  }
+  const selectorTimeoutMs = Math.round(timeoutSeconds * 1000);
+  const retryCount = nonnegativeInteger(Number(input?.retryCount ?? 2), "Retries", 2);
+  const retryDelayMs = nonnegativeInteger(Number(input?.retryDelayMs ?? 1000), "Retry delay", 1000);
+
+  let existing;
+  try {
+    existing = await readFile(paths.hydraConfigPath, "utf8");
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+    existing = "";
+  }
+  let parsed;
+  try {
+    parsed = existing.trim() ? parse(existing) : {};
+  } catch (error) {
+    throw new Error(`Invalid Hydra TOML at ${paths.hydraConfigPath}: ${error.message}`);
+  }
+  const configuredSlugs = new Set(
+    Object.keys(parsed.synthetic_models ?? {}).map((name) => normalizeSyntheticSlug(name)),
+  );
+  if (configuredSlugs.has(slug)) throw new Error(`Synthetic model already exists: ${slug}`);
+
+  await mkdir(paths.selectorsDir, { recursive: true });
+  const selectorFilename = `${slug.slice("hydra/".length)}.js`;
+  const selectorPath = path.join(paths.selectorsDir, selectorFilename);
+  const selector = path.relative(path.dirname(paths.hydraConfigPath), selectorPath);
+  const template = await readFile(PROMPT_SELECTOR_TEMPLATE, "utf8");
+  const selectorSource = template
+    .replace("__HYDRA_SELECTOR_MODEL__", JSON.stringify(selectorModel))
+    .replace("__HYDRA_SELECTOR_PROMPT__", JSON.stringify(selectorPrompt));
+  const definition = generatedDefinition({
+    slug,
+    displayName,
+    selector,
+    candidates,
+    fallbackModel,
+    selectorModel,
+    routingScope,
+    selectorTimeoutMs,
+    retryCount,
+    retryDelayMs,
+  });
+  const separator = !existing ? "" : existing.endsWith("\n") ? "\n" : "\n\n";
+  const nextConfig = `${existing}${separator}${definition}\n`;
+  const temporaryConfig = `${paths.hydraConfigPath}.${process.pid}.${Date.now()}.tmp`;
+  let selectorCreated = false;
+  try {
+    await writeFile(selectorPath, selectorSource, { flag: "wx", mode: 0o600 });
+    selectorCreated = true;
+    await parseSyntheticConfig(nextConfig, { configPath: paths.hydraConfigPath });
+    await writeFile(temporaryConfig, nextConfig, { flag: "wx", mode: 0o600 });
+    await rename(temporaryConfig, paths.hydraConfigPath);
+  } catch (error) {
+    await unlink(temporaryConfig).catch(() => {});
+    if (selectorCreated) await unlink(selectorPath).catch(() => {});
+    if (error.code === "EEXIST") throw new Error(`Synthetic model already exists: ${slug}`);
+    throw error;
+  }
+  return { slug, selectorPath };
 }

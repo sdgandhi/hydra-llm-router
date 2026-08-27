@@ -227,9 +227,10 @@ async function assertSelectorUnchanged(definition) {
   }
 }
 
-export async function runSyntheticSelector({ definition, context, signal }) {
+export async function runSyntheticSelector({ definition, context, signal, callModel }) {
   await assertSelectorUnchanged(definition);
   return new Promise((resolve, reject) => {
+    const modelCallController = new AbortController();
     const worker = new Worker(WORKER_PATH, {
       workerData: { selectorPath: definition.selectorPath, nonce: randomUUID(), context },
     });
@@ -240,10 +241,16 @@ export async function runSyntheticSelector({ definition, context, signal }) {
       settled = true;
       if (timeout) clearTimeout(timeout);
       signal?.removeEventListener("abort", onAbort);
+      if (!modelCallController.signal.aborted) {
+        modelCallController.abort(new DOMException("Selector finished", "AbortError"));
+      }
       worker.terminate().catch(() => {});
       callback(value);
     };
     const onAbort = () => {
+      if (!modelCallController.signal.aborted) {
+        modelCallController.abort(signal?.reason ?? new DOMException("Request cancelled", "AbortError"));
+      }
       worker.postMessage({ type: "abort", reason: "Request cancelled" });
       const error = signal?.reason instanceof Error ? signal.reason : new DOMException("Request cancelled", "AbortError");
       finish(reject, error);
@@ -252,14 +259,42 @@ export async function runSyntheticSelector({ definition, context, signal }) {
     signal?.addEventListener("abort", onAbort, { once: true });
     if (definition.selectorTimeoutMs > 0) {
       timeout = setTimeout(() => {
+        if (!modelCallController.signal.aborted) {
+          modelCallController.abort(new DOMException("Selector timed out", "TimeoutError"));
+        }
         worker.postMessage({ type: "abort", reason: "Selector timed out" });
         const error = new Error(`Selector timed out after ${definition.selectorTimeoutMs}ms`);
         error.code = "HYDRA_SELECTOR_TIMEOUT";
         finish(reject, error);
       }, definition.selectorTimeoutMs);
     }
-    worker.on("message", (message) => {
-      if (message?.type === "result") finish(resolve, message.result);
+    worker.on("message", async (message) => {
+      if (message?.type === "model_call") {
+        if (typeof callModel !== "function") {
+          worker.postMessage({
+            type: "model_call_result",
+            id: message.id,
+            error: { code: "HYDRA_SELECTOR_MODEL_UNAVAILABLE", message: "Selector model calls are unavailable" },
+          });
+          return;
+        }
+        try {
+          const result = await callModel({
+            model: message.model,
+            prompt: message.prompt,
+            signal: modelCallController.signal,
+          });
+          if (!settled) worker.postMessage({ type: "model_call_result", id: message.id, result });
+        } catch (error) {
+          if (!settled) {
+            worker.postMessage({
+              type: "model_call_result",
+              id: message.id,
+              error: { code: error?.code, message: "Selector model call failed" },
+            });
+          }
+        }
+      } else if (message?.type === "result") finish(resolve, message.result);
       else if (message?.type === "error") {
         const error = new Error(message.error?.message ?? "Selector failed");
         error.name = message.error?.name ?? "Error";

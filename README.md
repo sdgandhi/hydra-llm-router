@@ -75,7 +75,7 @@ For terminal-only use, `serve` can still run without a menu bar:
 node src/cli.js serve --no-menubar
 ```
 
-The menu bar and `models` command both show the detected catalog entries Hydra has written. The menu has a nested `Synthetic Models` view with each model's selector, candidates, fallback, routing scope, retry settings, and last in-memory target. Its `Refresh` action reloads synthetic definitions and the catalog and clears routing locks; `Open Hydra Config` opens the unified TOML file. Local providers are queried during `refresh` or `install`; a provider that is offline or advertises no chat models contributes no direct catalog entries.
+The menu bar and `models` command both show the detected catalog entries Hydra has written. Install, restore, refresh, and config actions appear directly below the Codex routing status. The nested `Synthetic Models` view shows each model's selector, candidates, fallback, routing scope, retry settings, and last in-memory target. Click a selector row to reveal its module in Finder. Its `Refresh` action reloads synthetic definitions and the catalog and clears routing locks; `Open Hydra Config` opens the unified TOML file. Local providers are queried during `refresh` or `install`; a provider that is offline or advertises no chat models contributes no direct catalog entries.
 
 After testing with debug mode, restart without debug logging:
 
@@ -109,6 +109,8 @@ The prefix avoids name collisions and lets Hydra choose the correct upstream det
 ## Synthetic Models
 
 Synthetic models are stable `hydra/` catalog entries whose JavaScript selector chooses one direct OpenAI, Ollama, or LM Studio model for a request. The selector returns only the target model slug; Hydra then performs exactly one user-visible generation through the existing provider adapter. Synthetic models cannot select other synthetic models.
+
+Choose `Synthetic Models` → `New…` in the menu bar to create a prompt-routed model. The form lists every currently available direct server and local model for the candidate allowlist, fallback, and selector classifier. It also configures per-user-turn or per-conversation scope, selector timeout in seconds (`0` disables it), and generation retry count and delay. Save validates the complete form and rejects duplicate names, generates a selector from Hydra's bundled prompt-router template under `~/.codex/hydra/selectors/`, appends its definition to `config.toml`, and refreshes the running router. The generated classifier receives the configured prompt plus Hydra's normalized request context and must return exactly one allowed generation slug.
 
 `install` creates the bundled `hydra/money-saver` preset without overwriting an existing config or selector. Money Saver calls LM Studio's `liquid/lfm2.5-1.2b` with thinking disabled to classify the task using a strict score:
 

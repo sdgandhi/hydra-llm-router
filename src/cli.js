@@ -23,7 +23,11 @@ import { createAppServerBridge, parseAppToolServers, resolveCodexBin } from "./a
 import { configureDebugLog, writeDebugLine } from "./debug.js";
 import { menuBarStatusItems, startMenuBar } from "./menubar.js";
 import { createHydraHandler, emulatedToolStatuses } from "./router.js";
-import { ensureSyntheticDefaults, loadSyntheticConfig } from "./synthetic-config.js";
+import {
+  createPromptSyntheticModel,
+  ensureSyntheticDefaults,
+  loadSyntheticConfig,
+} from "./synthetic-config.js";
 import { ensureHydraConfig, loadHydraSettings } from "./hydra-config.js";
 import { hydraVersion } from "./version.js";
 
@@ -369,6 +373,19 @@ export async function main() {
       await restoreConfig(config.paths);
       config.installed = false;
     }),
+    onCreateSynthetic: async (input) => {
+      const availableModels = (config.catalog?.models ?? [])
+        .map((model) => model?.slug)
+        .filter((slug) => typeof slug === "string" && !slug.startsWith("hydra/"));
+      const created = await createPromptSyntheticModel(config.paths, input, { availableModels });
+      await refreshCatalog(config);
+      handler.syntheticState.clear();
+      await reloadRuntimeView();
+      config.menuNotice = `Last action: Created ${created.slug}`;
+      menuBar?.update(config);
+      console.log(`Created synthetic model ${created.slug}`);
+      return { slug: created.slug };
+    },
   });
 
   async function runMenuAction(successNotice, action) {
