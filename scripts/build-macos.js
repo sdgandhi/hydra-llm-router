@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
+  chmodSync,
   cpSync,
   existsSync,
   mkdirSync,
@@ -14,6 +16,7 @@ import process from "node:process";
 import { fileURLToPath } from "node:url";
 
 const repoDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const DDGR_SHA256 = "98a8e06d283e58e676afa68daa686e6e6204f4132b2858084aef136c3dfcd28f";
 
 export function nextPatchVersion(version) {
   const match = /^(\d+)\.(\d+)\.(\d+)$/.exec(version);
@@ -31,6 +34,11 @@ function run(command, args, options = {}) {
 
 function writeJson(filePath, value) {
   writeFileSync(filePath, `${JSON.stringify(value, null, 2)}\n`);
+}
+
+function verifySha256(filePath, expected) {
+  const actual = createHash("sha256").update(readFileSync(filePath)).digest("hex");
+  if (actual !== expected) throw new Error(`SHA-256 mismatch for ${filePath}: expected ${expected}, received ${actual}`);
 }
 
 function bumpVersion() {
@@ -128,6 +136,11 @@ export function buildMacDmg({ release = false } = {}) {
   cpSync(nodeLicense, path.join(licensesDir, "Node-LICENSE"));
   cpSync(path.join(repoDir, "src"), path.join(bundledAppDir, "src"), { recursive: true });
   cpSync(path.join(repoDir, "package.json"), path.join(bundledAppDir, "package.json"));
+  const ddgrSource = path.join(repoDir, "vendor/ddgr/ddgr");
+  verifySha256(ddgrSource, DDGR_SHA256);
+  cpSync(path.join(repoDir, "vendor/ddgr"), path.join(bundledAppDir, "vendor/ddgr"), { recursive: true });
+  chmodSync(path.join(bundledAppDir, "vendor/ddgr/ddgr"), 0o755);
+  cpSync(path.join(repoDir, "vendor/ddgr/LICENSE"), path.join(licensesDir, "ddgr-LICENSE"));
   const dependencyDir = path.join(repoDir, "node_modules/smol-toml");
   if (!existsSync(dependencyDir)) throw new Error("Run npm ci before building the macOS app.");
   mkdirSync(path.join(bundledAppDir, "node_modules"), { recursive: true });

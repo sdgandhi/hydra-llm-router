@@ -16,6 +16,8 @@ test("the native macOS launcher replaces the Finder command file", async () => {
   assert.match(buildSource, /HYDRA_SIGNING_IDENTITY/);
   assert.match(buildSource, /ad-hoc \(not notarizable\)/);
   assert.match(buildSource, /Ad-hoc release builds cannot be notarized/);
+  assert.match(buildSource, /vendor\/ddgr/);
+  assert.match(buildSource, /DDGR_SHA256/);
   assert.match(buildSource, /HydraDebugLogging/);
   assert.match(menuSource, /NSOpenPanel/);
   assert.match(menuSource, /withApplicationAt/);

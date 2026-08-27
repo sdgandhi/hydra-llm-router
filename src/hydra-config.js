@@ -1,7 +1,11 @@
 import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { parse } from "smol-toml";
+
+export const BUNDLED_DDGR_TOKEN = "@hydra/ddgr";
+const BUNDLED_DDGR_PATH = fileURLToPath(new URL("../vendor/ddgr/ddgr", import.meta.url));
 
 export const HYDRA_CONFIG_DEFAULTS = Object.freeze({
   port: 3847,
@@ -17,7 +21,7 @@ export const HYDRA_CONFIG_DEFAULTS = Object.freeze({
   lmStudioContextWindow: null,
   appTools: "auto",
   appToolServers: ["codex_apps"],
-  webSearchCommands: [["./bin/ddgr"], ["ddgr"], ["search"], ["duckduckgo"]],
+  webSearchCommands: [[BUNDLED_DDGR_TOKEN]],
 });
 
 const TOP_LEVEL_KEYS = new Set(["hydra", "codex", "providers", "app_tools", "tools", "synthetic_models"]);
@@ -90,6 +94,7 @@ function commandArray(value, name, fallback) {
 
 function resolveFromConfig(value, configPath) {
   if (!value) return value;
+  if (value === BUNDLED_DDGR_TOKEN) return BUNDLED_DDGR_PATH;
   if (value === "~") return homedir();
   if (value.startsWith("~/")) return path.join(homedir(), value.slice(2));
   if (value === ".") return path.dirname(configPath);

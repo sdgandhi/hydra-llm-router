@@ -285,12 +285,11 @@ servers = ["codex_apps"]
 
 [tools]
 web_search_commands = [
-  ["./bin/ddgr"],
-  ["ddgr"],
-  ["search"],
-  ["duckduckgo"],
+  ["@hydra/ddgr"],
 ]
 ```
+
+`@hydra/ddgr` resolves to Hydra's bundled, checksum-pinned `ddgr` 2.2 executable, independent of the app's installation path. The script requires Python 3.8 or newer.
 
 Relative `data_dir`, Codex binary, selector, and search-command paths resolve from the selected config file. Hydra uses the following precedence: command-line flags, then TOML, then built-in defaults. For example:
 

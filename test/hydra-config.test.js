@@ -3,7 +3,12 @@ import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { ensureHydraConfig, loadHydraSettings, parseHydraSettings } from "../src/hydra-config.js";
+import {
+  BUNDLED_DDGR_TOKEN,
+  ensureHydraConfig,
+  loadHydraSettings,
+  parseHydraSettings,
+} from "../src/hydra-config.js";
 
 test("parses the unified TOML schema and resolves relative paths", () => {
   const configPath = "/tmp/hydra-profile/config.toml";
@@ -75,7 +80,8 @@ test("creates a complete default config once", async () => {
     assert.equal(config.lmStudioBaseUrl, "http://127.0.0.1:11239");
     assert.equal(config.appTools, "auto");
     assert.deepEqual(config.appToolServers, ["codex_apps"]);
-    assert.deepEqual(config.webSearchCommands.slice(1), [["ddgr"], ["search"], ["duckduckgo"]]);
+    assert.match(config.webSearchCommands[0][0], /vendor\/ddgr\/ddgr$/);
+    assert.match(original, new RegExp(BUNDLED_DDGR_TOKEN.replace("/", "\\/")));
     assert.equal((await stat(configPath)).mode & 0o777, 0o600);
     assert.equal(await readFile(configPath, "utf8"), original);
   } finally {
