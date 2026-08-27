@@ -85,10 +85,12 @@ function sign(target, { identity, release, entitlements, hardened = release }) {
 
 export function buildMacDmg({ release = false } = {}) {
   if (process.platform !== "darwin") throw new Error("Hydra DMGs can only be built on macOS.");
-  const identity = release ? process.env.HYDRA_SIGNING_IDENTITY : "-";
-  if (!identity) {
-    throw new Error("Release builds require HYDRA_SIGNING_IDENTITY with a Developer ID Application identity.");
+  const identity = process.env.HYDRA_SIGNING_IDENTITY || "-";
+  const adHoc = identity === "-";
+  if (release && adHoc && process.env.HYDRA_NOTARY_PROFILE) {
+    throw new Error("Ad-hoc release builds cannot be notarized; unset HYDRA_NOTARY_PROFILE or provide a Developer ID identity.");
   }
+  const distributionSigning = release && !adHoc;
 
   const packageJson = JSON.parse(readFileSync(path.join(repoDir, "package.json"), "utf8"));
   const version = release ? bumpVersion() : packageJson.version;
@@ -134,17 +136,17 @@ export function buildMacDmg({ release = false } = {}) {
   writeFileSync(path.join(contentsDir, "Info.plist"), infoPlist(version, !release));
   createIcon(path.join(repoDir, "src/hydra-menubar.png"), path.join(resourcesDir, "Hydra.icns"));
 
-  sign(path.join(binDir, "node"), { identity, release, entitlements });
-  sign(path.join(binDir, "HydraMenuBar"), { identity, release });
-  sign(path.join(macOSDir, "Hydra"), { identity, release });
-  sign(appDir, { identity, release });
+  sign(path.join(binDir, "node"), { identity, release: distributionSigning, entitlements });
+  sign(path.join(binDir, "HydraMenuBar"), { identity, release: distributionSigning });
+  sign(path.join(macOSDir, "Hydra"), { identity, release: distributionSigning });
+  sign(appDir, { identity, release: distributionSigning });
   run("/usr/bin/codesign", ["--verify", "--deep", "--strict", "--verbose=2", appDir]);
 
   mkdirSync(dmgRoot, { recursive: true });
   cpSync(appDir, path.join(dmgRoot, "Hydra.app"), { recursive: true });
   symlinkSync("/Applications", path.join(dmgRoot, "Applications"));
   run("/usr/bin/hdiutil", ["create", "-volname", "Hydra", "-srcfolder", dmgRoot, "-ov", "-format", "UDZO", dmgPath]);
-  sign(dmgPath, { identity, release, hardened: false });
+  sign(dmgPath, { identity, release: distributionSigning, hardened: false });
   run("/usr/bin/codesign", ["--verify", "--verbose=2", dmgPath]);
 
   if (release && process.env.HYDRA_NOTARY_PROFILE) {
@@ -154,7 +156,7 @@ export function buildMacDmg({ release = false } = {}) {
 
   console.log(`Built ${dmgPath}`);
   console.log(`Version: ${version}`);
-  console.log(`Signature: ${release ? identity : "ad-hoc (development only)"}`);
+  console.log(`Signature: ${adHoc ? "ad-hoc (not notarizable)" : identity}`);
   return { appDir, dmgPath, version, arch };
 }
 

@@ -47,7 +47,13 @@ npm run dmg:dev
 
 The output is written to `dist/Hydra-<version>-dev-<architecture>.dmg`. Because the bundled Node executable is architecture-specific, build once on each target architecture you distribute.
 
-Release builds increment the patch version in `package.json` and `package-lock.json` before creating the app and DMG. They require a Developer ID Application certificate:
+Release builds increment the patch version in `package.json` and `package-lock.json` before creating the app and DMG. By default they are ad-hoc signed and cannot be notarized:
+
+```sh
+npm run dmg:release
+```
+
+To produce a distributable Developer ID-signed release instead:
 
 ```sh
 HYDRA_SIGNING_IDENTITY="Developer ID Application: Your Name (TEAMID)" npm run dmg:release
