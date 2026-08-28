@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
 import { access, readFile } from "node:fs/promises";
 import { delimiter, isAbsolute, join } from "node:path";
@@ -19,6 +19,7 @@ import { ResponseGate } from "./response-gate.js";
 import {
   buildSelectorContext,
   runSyntheticSelector,
+  selectorContextDiagnostics,
   selectorFeatures,
   validateSelectorTarget,
 } from "./synthetic.js";
@@ -2015,6 +2016,7 @@ async function callSelectorModel({
   debugAuth,
   source,
   syntheticModel,
+  allowedSlugs,
 }) {
   if (typeof model !== "string" || !model.trim() || typeof prompt !== "string" || !prompt) {
     const error = new Error("Invalid selector model call");
@@ -2109,6 +2111,7 @@ async function callSelectorModel({
     error.code = "HYDRA_SELECTOR_MODEL_OUTPUT";
     throw error;
   }
+  const normalizedOutput = stripLocalControlMarkers(output).trim();
   debugLogSynthetic({
     enabled: debugAuth,
     event: "selector-model-response",
@@ -2119,9 +2122,16 @@ async function callSelectorModel({
       provider: route.provider,
       status: response.status,
       outputChars: output.length,
+      output,
+      outputDiagnostics: {
+        sha256: createHash("sha256").update(output).digest("hex"),
+        lines: output.split(/\r?\n/).length,
+        hasCodeFence: output.includes("```"),
+        candidateMatches: (allowedSlugs ?? []).filter((slug) => output.includes(slug)),
+      },
     },
   });
-  return stripLocalControlMarkers(output).trim();
+  return normalizedOutput;
 }
 
 async function runDirectAttempts({
@@ -2230,6 +2240,7 @@ async function handleSyntheticRequest({
   const lock = stateOwner ?? statefulLock ?? (definition.routingScope === "conversation" ? conversationLock : turnLock);
   const statePinned = Boolean(stateOwner || statefulLock);
   let context;
+  let selectorResult;
   let selectedSlug;
   let effectiveEffort;
   let selectionFallback = false;
@@ -2275,7 +2286,7 @@ async function handleSyntheticRequest({
     signal.throwIfAborted();
     const selectorStartedAt = performance.now();
     try {
-      const result = await runSyntheticSelector({
+      selectorResult = await runSyntheticSelector({
         definition,
         context,
         signal,
@@ -2294,9 +2305,10 @@ async function handleSyntheticRequest({
           debugAuth,
           source,
           syntheticModel: definition.slug,
+          allowedSlugs: definition.effectiveCandidates,
         }),
       });
-      const selected = validateSelectorTarget({ definition, target: result, context, routes });
+      const selected = validateSelectorTarget({ definition, target: selectorResult, context, routes });
       selectedSlug = selected.slug;
       effectiveEffort = effectiveReasoningEffort(selected.route, requestedEffort);
     } catch (error) {
@@ -2327,11 +2339,13 @@ async function handleSyntheticRequest({
       selectorHash: definition.selectorHash,
       selectorTimeoutMs: definition.selectorTimeoutMs,
       selectorDurationMs,
+      selectorResult,
       selected: selectedSlug,
       fallback: selectionFallback,
       requestedReasoningEffort: requestedEffort,
       effectiveReasoningEffort: effectiveEffort,
       features: context.features,
+      selectorContext: selectorContextDiagnostics(body, definition.selectorContextParts),
       candidates: context.candidates,
       providers: context.providers,
       machine: context.machine,

@@ -12,6 +12,8 @@ export const SYNTHETIC_REASONING_LEVELS = [
   { effort: "high", description: "Use high reasoning." },
 ];
 
+export const SELECTOR_CONTEXT_PARTS = ["system", "history", "latest_user", "tools", "metadata"];
+
 export const MONEY_SAVER_DEFINITION = `[synthetic_models.money-saver]
 display_name = "Hydra: Money Saver"
 description = "Routes requests by estimated task complexity."
@@ -32,6 +34,7 @@ const ALLOWED_DEFINITION_KEYS = new Set([
   "display_name",
   "description",
   "selector",
+  "selector_context",
   "candidates",
   "fallback_model",
   "routing_scope",
@@ -77,6 +80,15 @@ function requiredBoolean(value, field) {
 function requiredString(value, field) {
   if (typeof value !== "string" || !value.trim()) throw new Error(`${field} must be a non-empty string`);
   return value.trim();
+}
+
+function selectorContextParts(value, field) {
+  if (value == null) return [...SELECTOR_CONTEXT_PARTS];
+  if (!Array.isArray(value) || value.length === 0) throw new Error(`${field} must be a non-empty array`);
+  const parts = [...new Set(value.map((part) => requiredString(part, `${field}[]`)))];
+  const unknown = parts.find((part) => !SELECTOR_CONTEXT_PARTS.includes(part));
+  if (unknown) throw new Error(`${field} contains unsupported context part: ${unknown}`);
+  return parts;
 }
 
 async function selectorSnapshot(selectorPath) {
@@ -149,6 +161,10 @@ export async function parseSyntheticConfig(text, { configPath }) {
       selector,
       selectorPath,
       selectorHash: snapshot?.selectorHash,
+      selectorContextParts: selectorContextParts(
+        value.selector_context,
+        `synthetic_models.${name}.selector_context`,
+      ),
       candidates,
       fallbackModel,
       effectiveCandidates,
@@ -245,6 +261,7 @@ function generatedDefinition({
   candidates,
   fallbackModel,
   selectorModel,
+  selectorContextParts,
   routingScope,
   selectorTimeoutMs,
   retryCount,
@@ -255,6 +272,7 @@ function generatedDefinition({
 display_name = ${tomlString(`Hydra: ${displayName}`)}
 description = ${tomlString(`Prompt-routed using ${selectorModel}.`)}
 selector = ${tomlString(selector)}
+selector_context = ${JSON.stringify(selectorContextParts)}
 candidates = ${JSON.stringify(candidates)}
 fallback_model = ${tomlString(fallbackModel)}
 routing_scope = ${tomlString(routingScope)}
@@ -282,6 +300,7 @@ export async function createPromptSyntheticModel(paths, input, { availableModels
   const fallbackModel = availableDirectModel(input?.fallbackModel, "Fallback model", available);
   const selectorModel = availableDirectModel(input?.selectorModel, "Selector model", available);
   const selectorPrompt = requiredString(input?.selectorPrompt, "Selector prompt");
+  const selectedContextParts = selectorContextParts(input?.selectorContextParts, "Selector context");
   const routingScope = input?.routingScope ?? "user_turn";
   if (!new Set(["user_turn", "conversation"]).has(routingScope)) {
     throw new Error("Scope must be user_turn or conversation");
@@ -319,7 +338,8 @@ export async function createPromptSyntheticModel(paths, input, { availableModels
   const template = await readFile(PROMPT_SELECTOR_TEMPLATE, "utf8");
   const selectorSource = template
     .replace("__HYDRA_SELECTOR_MODEL__", JSON.stringify(selectorModel))
-    .replace("__HYDRA_SELECTOR_PROMPT__", JSON.stringify(selectorPrompt));
+    .replace("__HYDRA_SELECTOR_PROMPT__", JSON.stringify(selectorPrompt))
+    .replace("__HYDRA_SELECTOR_CONTEXT_PARTS__", JSON.stringify(selectedContextParts));
   const definition = generatedDefinition({
     slug,
     displayName,
@@ -327,6 +347,7 @@ export async function createPromptSyntheticModel(paths, input, { availableModels
     candidates,
     fallbackModel,
     selectorModel,
+    selectorContextParts: selectedContextParts,
     routingScope,
     selectorTimeoutMs,
     retryCount,

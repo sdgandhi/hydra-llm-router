@@ -26,6 +26,7 @@ final class NewSyntheticModelController: NSObject, NSTextFieldDelegate, NSTextVi
   private let fallbackPopup = NSPopUpButton()
   private let selectorPopup = NSPopUpButton()
   private let promptView = PlaceholderTextView()
+  private var contextButtons: [NSButton] = []
   private let scopePopup = NSPopUpButton()
   private let timeoutField = NSTextField(string: "0")
   private let retryCountField = NSTextField(string: "2")
@@ -41,7 +42,7 @@ final class NewSyntheticModelController: NSObject, NSTextFieldDelegate, NSTextVi
     self.existingSlugs = existingSlugs
     self.submit = submit
     window = NSWindow(
-      contentRect: NSRect(x: 0, y: 0, width: 700, height: 720),
+      contentRect: NSRect(x: 0, y: 0, width: 700, height: 820),
       styleMask: [.titled],
       backing: .buffered,
       defer: false
@@ -128,6 +129,25 @@ final class NewSyntheticModelController: NSObject, NSTextFieldDelegate, NSTextVi
     promptScroll.documentView = promptView
     promptScroll.heightAnchor.constraint(equalToConstant: 100).isActive = true
 
+    let contextChoices: [(String, String)] = [
+      ("system", "System and developer prompts"),
+      ("history", "Message history"),
+      ("latest_user", "Latest user message"),
+      ("tools", "Tool calls and results"),
+      ("metadata", "Token and capability metadata"),
+    ]
+    let contextStack = NSStackView()
+    contextStack.orientation = .vertical
+    contextStack.alignment = .leading
+    contextStack.spacing = 4
+    for (key, title) in contextChoices {
+      let button = NSButton(checkboxWithTitle: title, target: self, action: #selector(valueChanged))
+      button.identifier = NSUserInterfaceItemIdentifier(key)
+      button.state = .on
+      contextStack.addArrangedSubview(button)
+      contextButtons.append(button)
+    }
+
     scopePopup.addItems(withTitles: ["user_turn", "conversation"])
     scopePopup.selectItem(withTitle: "user_turn")
     scopePopup.target = self
@@ -147,6 +167,7 @@ final class NewSyntheticModelController: NSObject, NSTextFieldDelegate, NSTextVi
     form.addArrangedSubview(row("Fallback model", fallbackPopup))
     form.addArrangedSubview(row("Selector model", selectorPopup))
     form.addArrangedSubview(row("Selector prompt", promptScroll, alignTop: true))
+    form.addArrangedSubview(row("Selector context", contextStack, alignTop: true))
     form.addArrangedSubview(row("Scope", scopePopup))
     form.addArrangedSubview(row("Timeout (seconds)", timeoutField))
 
@@ -234,6 +255,7 @@ final class NewSyntheticModelController: NSObject, NSTextFieldDelegate, NSTextVi
       && fallbackPopup.selectedItem?.representedObject is String
       && selectorPopup.selectedItem?.representedObject is String
       && !promptView.string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+      && contextButtons.contains(where: { $0.state == .on })
       && nonnegativeNumber(timeoutField, integer: false)
       && nonnegativeNumber(retryCountField, integer: true)
       && nonnegativeNumber(retryDelayField, integer: true)
@@ -267,6 +289,7 @@ final class NewSyntheticModelController: NSObject, NSTextFieldDelegate, NSTextVi
       "fallbackModel": fallbackModel,
       "selectorModel": selectorModel,
       "selectorPrompt": promptView.string,
+      "selectorContextParts": contextButtons.filter { $0.state == .on }.compactMap { $0.identifier?.rawValue },
       "routingScope": scopePopup.titleOfSelectedItem ?? "user_turn",
       "timeoutSeconds": Double(timeoutField.stringValue) ?? 0,
       "retryCount": Int(retryCountField.stringValue) ?? 2,

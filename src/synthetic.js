@@ -94,6 +94,30 @@ export function selectorFeatures(body, messages = normalizeSelectorMessages(body
   };
 }
 
+function summarizedValue(value) {
+  const text = JSON.stringify(value ?? null);
+  return { chars: text.length, items: Array.isArray(value) ? value.length : value == null ? 0 : 1 };
+}
+
+export function selectorContextDiagnostics(body, contextParts) {
+  const included = new Set(contextParts ?? ["system", "history", "latest_user", "tools", "metadata"]);
+  const messages = normalizeSelectorMessages(body);
+  return {
+    system: { included: included.has("system"), ...summarizedValue([...messages.system, ...messages.developer]) },
+    history: { included: included.has("history"), ...summarizedValue(messages.history) },
+    latestUser: { included: included.has("latest_user"), ...summarizedValue(messages.latestUser) },
+    tools: {
+      included: included.has("tools"),
+      calls: summarizedValue(messages.toolCalls),
+      results: summarizedValue(messages.toolResults),
+    },
+    metadata: {
+      included: included.has("metadata"),
+      features: selectorFeatures(body, messages),
+    },
+  };
+}
+
 async function safeExec(command, args) {
   try {
     return (await execFileAsync(command, args, { timeout: 3000, maxBuffer: 1024 * 1024 })).stdout;

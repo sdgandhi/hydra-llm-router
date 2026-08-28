@@ -8,6 +8,7 @@ import {
   buildSelectorContext,
   normalizeSelectorMessages,
   runSyntheticSelector,
+  selectorContextDiagnostics,
   selectorFeatures,
   validateSelectorTarget,
 } from "../src/synthetic.js";
@@ -45,6 +46,24 @@ test("separates selector messages and overestimates request tokens", () => {
   assert.equal(features.toolCount, 1);
   assert.equal(features.requestedReasoningEffort, "high");
   assert.ok(features.actualContextTokens > body.instructions.length / 4);
+});
+
+test("summarizes selected context sections without retaining their content", () => {
+  const diagnostics = selectorContextDiagnostics({
+    instructions: "secret system prompt",
+    input: [
+      { role: "user", content: "older secret" },
+      { role: "assistant", content: "older answer" },
+      { role: "user", content: "latest secret" },
+      { type: "function_call", name: "tool", arguments: "{}" },
+    ],
+  }, ["latest_user", "tools"]);
+  assert.equal(diagnostics.system.included, false);
+  assert.equal(diagnostics.history.items, 2);
+  assert.equal(diagnostics.latestUser.included, true);
+  assert.equal(diagnostics.tools.included, true);
+  assert.equal(diagnostics.tools.calls.items, 1);
+  assert.doesNotMatch(JSON.stringify(diagnostics), /secret/);
 });
 
 test("builds selector context with candidates grouped provider state", async () => {

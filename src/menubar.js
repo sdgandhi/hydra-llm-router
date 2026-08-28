@@ -129,6 +129,7 @@ function syntheticModelsMenu(config) {
         { kind: "info", title: `Candidates: ${definition.candidates.join(", ")}` },
         { kind: "info", title: `Fallback: ${definition.fallbackModel}` },
         { kind: "info", title: `Scope: ${definition.routingScope}` },
+        { kind: "info", title: `Selector context: ${(definition.selectorContextParts ?? ["all"]).join(", ")}` },
         { kind: "info", title: `Sticky tools: ${definition.stickyToolContinuations ? "on" : "off"}` },
         { kind: "info", title: `Timeout: ${definition.selectorTimeoutMs || "off"}` },
         { kind: "info", title: `Retries: ${definition.retryCount} × ${definition.retryDelayMs}ms` },

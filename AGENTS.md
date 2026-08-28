@@ -81,7 +81,7 @@ Use `scripts/dev-codex` directly when another development tool needs a Codex CLI
 - Sensitive headers should stay redacted.
 - Debug logging must not depend on stderr being open. The Desktop/agent terminal pipe can close and cause `EPIPE`.
 - If the server appears stopped, check both `~/.hydra/hydra.pid` and the actual listener with `lsof -nP -iTCP:3847 -sTCP:LISTEN`; stale pid files can happen after interrupted tests.
-- Never log prompt text, raw request bodies, or local model output; keep request logging summarized by route, shape, sizes, and capability/tool counts.
+- Never log prompt text, raw request bodies, or generation-model output; keep request logging summarized by route, shape, sizes, and capability/tool counts. Selector-model responses are a narrow exception: log their exact text on every selector-model call so malformed routing outputs can be diagnosed.
 
 ## Verification
 

@@ -40,6 +40,9 @@ retry_delay_ms = 50
   assert.deepEqual(result.definitions[0].effectiveCandidates, ["ollama/tiny", "gpt-test"]);
   assert.equal(result.definitions[0].slug, "hydra/smart");
   assert.equal(result.definitions[0].routingScope, "conversation");
+  assert.deepEqual(result.definitions[0].selectorContextParts, [
+    "system", "history", "latest_user", "tools", "metadata",
+  ]);
   assert.equal(result.definitions[0].selectorTimeoutMs, 20);
   assert.match(result.definitions[0].selectorHash, /^[a-f0-9]{64}$/);
 });
@@ -120,6 +123,7 @@ test("creates a prompt-routed model from the bundled selector template", async (
     fallbackModel: "gpt-test",
     selectorModel: "gpt-test",
     selectorPrompt: "Choose the smallest suitable model.",
+    selectorContextParts: ["latest_user", "metadata"],
     routingScope: "conversation",
     timeoutSeconds: 1.5,
     retryCount: 3,
@@ -132,6 +136,7 @@ test("creates a prompt-routed model from the bundled selector template", async (
   });
   const definition = loaded.definitions[0];
   assert.equal(definition.routingScope, "conversation");
+  assert.deepEqual(definition.selectorContextParts, ["latest_user", "metadata"]);
   assert.equal(definition.selectorTimeoutMs, 1500);
   assert.equal(definition.retryCount, 3);
   assert.equal(definition.retryDelayMs, 25);
@@ -155,6 +160,8 @@ test("creates a prompt-routed model from the bundled selector template", async (
   assert.equal(classifierRequest.model, "gpt-test");
   assert.match(classifierRequest.prompt, /Choose the smallest suitable model/);
   assert.match(classifierRequest.prompt, /Allowed generation models: ollama\/tiny/);
+  assert.match(classifierRequest.prompt, /latestUser/);
+  assert.doesNotMatch(classifierRequest.prompt, /"system"/);
 
   await assert.rejects(
     createPromptSyntheticModel(paths, {

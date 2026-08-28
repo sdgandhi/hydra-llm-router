@@ -4,7 +4,7 @@ import { createServer as createHttpServer, request as httpRequest } from "node:h
 import { connect as connectNet } from "node:net";
 import { once } from "node:events";
 import { createHash } from "node:crypto";
-import { mkdtemp, writeFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { zstdCompressSync } from "node:zlib";
@@ -20,6 +20,7 @@ import {
   stripLocalControlMarkers,
   upstreamResponsesUrl,
 } from "../src/router.js";
+import { configureDebugLog } from "../src/debug.js";
 
 test("forwards /responses under an OpenAI-compatible /v1 base path", () => {
   assert.equal(
@@ -1705,6 +1706,8 @@ test("retries a selected synthetic target then uses its concrete fallback", asyn
 
 test("lets a prompt selector call a configured direct classifier model", async () => {
   const tempDir = await mkdtemp(join(tmpdir(), "hydra-selector-model-router-"));
+  const logPath = join(tempDir, "hydra.log");
+  configureDebugLog(logPath);
   const routesPath = join(tempDir, "routes.json");
   const selectorPath = join(tempDir, "selector.js");
   const selectorSource = `export default async () =>
@@ -1772,6 +1775,7 @@ test("lets a prompt selector call a configured direct classifier model", async (
       lmStudioBaseUrl: "http://127.0.0.1:11239",
       openaiBaseUrl: "https://chatgpt.com/backend-api/codex",
       syntheticContextOptions: syntheticContextFixture(),
+      debugAuth: true,
     });
     hydra = createHttpServer(handler);
     hydra.listen(0, "127.0.0.1");
@@ -1786,7 +1790,13 @@ test("lets a prompt selector call a configured direct classifier model", async (
     assert.equal(calls[0].body.model, "classifier");
     assert.equal(calls[0].body.chat_template_kwargs.enable_thinking, false);
     assert.equal(calls[1].body.model, "tiny");
+    const log = await readFile(logPath, "utf8");
+    assert.match(log, /hydra-synthetic-selector-model-response/);
+    assert.match(log, /"output":"ollama\/tiny"/);
+    assert.match(log, /"selectorResult":"ollama\/tiny"/);
+    assert.match(log, /"selectorContext":\{"system":/);
   } finally {
+    configureDebugLog(null);
     if (hydra?.listening) {
       hydra.close();
       await Promise.allSettled([once(hydra, "close")]);
