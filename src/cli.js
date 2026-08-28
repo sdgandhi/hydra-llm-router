@@ -35,6 +35,10 @@ const commands = new Set(["serve", "stop", "refresh", "install", "restore", "sta
 const booleanOptions = new Set(["--debug", "--menubar", "--no-menubar", "--json"]);
 const repeatableOptions = new Set(["--input", "--file", "--image", "--web-search-command"]);
 
+function configureRuntimeDebugLog(logPath) {
+  configureDebugLog(process.env.HYDRA_LOG_STDERR === "1" ? null : logPath);
+}
+
 function usage() {
   return `Usage: hydra <command> [options]
 
@@ -193,7 +197,7 @@ export async function main() {
 
   const config = await buildConfig(parsed.options);
   config.version = hydraVersion;
-  if (config.debugAuth) configureDebugLog(config.paths.logPath);
+  if (config.debugAuth) configureRuntimeDebugLog(config.paths.logPath);
 
   if (parsed.command === "route") {
     await runRouteCommand(config, parsed.options);
@@ -305,7 +309,7 @@ export async function main() {
   config.appToolStatus = await appServerBridge.status();
 
   if (config.debugAuth) {
-    configureDebugLog(config.paths.logPath);
+    configureRuntimeDebugLog(config.paths.logPath);
     writeDebugLine("hydra-start", {
       at: new Date().toISOString(),
       pid: process.pid,

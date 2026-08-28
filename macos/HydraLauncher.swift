@@ -28,8 +28,10 @@ do {
   fail("Could not create \(hydraURL.path): \(error.localizedDescription)")
 }
 
-let logURL = hydraURL.appendingPathComponent("launcher.log")
+let logURL = hydraURL.appendingPathComponent("hydra.log")
+let legacyLogURL = hydraURL.appendingPathComponent("launcher.log")
 let maxLogBytes: UInt64 = 100 * 1024 * 1024
+try? fileManager.removeItem(at: legacyLogURL)
 if !fileManager.fileExists(atPath: logURL.path) {
   fileManager.createFile(atPath: logURL.path, contents: nil)
 }
@@ -59,6 +61,7 @@ process.arguments = [cliURL.path, "serve", "--debug"]
 
 var environment = ProcessInfo.processInfo.environment
 environment["HYDRA_MENUBAR_BIN"] = menuBarURL.path
+environment["HYDRA_LOG_STDERR"] = "1"
 let extraPath = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 environment["PATH"] = [environment["PATH"], extraPath].compactMap { $0 }.joined(separator: ":")
 process.environment = environment

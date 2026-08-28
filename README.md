@@ -325,8 +325,7 @@ Key files:
 - `selectors/`: installed selector modules, including Money Saver
 - `config.backup.toml`: saved Codex config for restore
 - `hydra.pid`: running server pid
-- `hydra.log`: the always-on debug log, capped at 100 MB
-- `launcher.log`: bundled app output, capped at 100 MB
+- `hydra.log`: all launcher, router, and module output, capped at 100 MB
 
 ## Debugging
 
