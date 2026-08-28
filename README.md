@@ -1,6 +1,6 @@
 # Hydra LLM Router
 
-Hydra lets Codex Desktop use one model selector for OpenAI cloud models plus local Ollama and LM Studio models.
+Hydra lets Codex Desktop use one model selector for OpenAI cloud models plus local Ollama, LM Studio, and OMLX models.
 
 ![Codex Desktop model selector showing OpenAI and Ollama models side by side](docs/assets/codex-model-selector.png)
 
@@ -104,11 +104,17 @@ LM Studio models are exposed with an `lmstudio/` prefix, for example:
 lmstudio/qwen/qwen3.6-27b
 ```
 
+OMLX models are exposed with an `omlx/` prefix, for example:
+
+```text
+omlx/gemma-4-12B-it-MLX-8bit
+```
+
 The prefix avoids name collisions and lets Hydra choose the correct upstream deterministically.
 
 ## Synthetic Models
 
-Synthetic models are stable `hydra/` catalog entries whose JavaScript selector chooses one direct OpenAI, Ollama, or LM Studio model for a request. The selector returns only the target model slug; Hydra then performs exactly one user-visible generation through the existing provider adapter. Synthetic models cannot select other synthetic models.
+Synthetic models are stable `hydra/` catalog entries whose JavaScript selector chooses one direct OpenAI, Ollama, LM Studio, or OMLX model for a request. The selector returns only the target model slug; Hydra then performs exactly one user-visible generation through the existing provider adapter. Synthetic models cannot select other synthetic models.
 
 Choose `Synthetic Models` → `New…` in the menu bar to create a prompt-routed model. The form lists every currently available direct server and local model for the candidate allowlist, fallback, and selector classifier. It also configures per-user-turn or per-conversation scope, selector timeout in seconds (`0` disables it), and generation retry count and delay. Save validates the complete form and rejects duplicate names, generates a selector from Hydra's bundled prompt-router template under `~/.codex/hydra/selectors/`, appends its definition to `config.toml`, and refreshes the running router. The generated classifier receives the configured prompt plus Hydra's normalized request context and must return exactly one allowed generation slug.
 
@@ -201,23 +207,23 @@ All three commands also support text `--file` inputs and `--image` attachments. 
 
 ## Responses Reasoning and Streaming
 
-For LM Studio routes, Hydra normalizes `reasoning.effort`, `reasoning_effort`, and `reasoning_level` from Responses requests. Codex Desktop's visible `low` preset and an explicit `none` are translated to `chat_template_kwargs.enable_thinking: false` and LM Studio's documented `reasoning_effort: "none"`. Other efforts enable the chat-template thinking mode and are forwarded only when the route advertises thinking support. If reasoning is omitted, or another effort targets a route without thinking capability, Hydra preserves the route's existing behavior without enabling thinking.
+For LM Studio and OMLX routes, Hydra normalizes `reasoning.effort`, `reasoning_effort`, and `reasoning_level` from Responses requests. Codex Desktop's visible `low` preset and an explicit `none` are translated to `chat_template_kwargs.enable_thinking: false` and `reasoning_effort: "none"`. Other efforts enable the chat-template thinking mode and are forwarded only when the route advertises thinking support. If reasoning is omitted, or another effort targets a route without thinking capability, Hydra preserves the route's existing behavior without enabling thinking.
 
 For local-model turns, Hydra removes `request_user_input` unless Codex explicitly marks the turn as Plan mode, because Codex only executes that tool in Plan mode. Treating Plan as an opt-in also protects CLI and older Desktop requests that omit collaboration-mode metadata.
 
-Hydra exposes hosted `web_search` and `tool_search` declarations to both local providers only when their Hydra executors are ready. Hydra executes those calls inside a bounded local tool loop, returns the results to the model, and sends only the final answer back to Desktop.
+Hydra exposes hosted `web_search` and `tool_search` declarations to local providers only when their Hydra executors are ready. Hydra executes those calls inside a bounded local tool loop, returns the results to the model, and sends only the final answer back to Desktop.
 
 Desktop-owned function tools such as `exec_command` remain delegated to Codex Desktop so its workspace sandbox and approval policy stay authoritative. Responses custom tools such as `apply_patch` are wrapped as local JSON functions and translated back to `custom_tool_call` events when selected.
 
 Hydra strips leaked channel-control markers such as `<|channel>thought ... <channel|>` from both streaming and non-streaming local-model output. The streaming filter buffers partial markers so control tokens split across upstream chunks are not exposed to Codex Desktop.
 
-With `stream: true`, Hydra sends a streaming LM Studio chat-completions request and translates chunks to Responses SSE as they arrive; it does not wait for the complete local response. Text is emitted as `response.output_text.delta`. Reasoning-summary events are emitted only when thinking was explicitly enabled, and an explicit `none` never emits them. Successful streams end with `response.completed` followed by `data: [DONE]`.
+With `stream: true`, Hydra sends streaming LM Studio and OMLX chat-completions requests and translates chunks to Responses SSE as they arrive; it does not wait for the complete local response. Text is emitted as `response.output_text.delta`. Reasoning-summary events are emitted only when thinking was explicitly enabled, and an explicit `none` never emits them. Successful streams end with `response.completed` followed by `data: [DONE]`.
 
-Every Responses request has a request-scoped cancellation signal. If the client aborts the request or closes the downstream response before completion, Hydra aborts the active LM Studio, Ollama, or cloud fetch and stops consuming its stream. A normal completed socket close does not trigger cancellation.
+Every Responses request has a request-scoped cancellation signal. If the client aborts the request or closes the downstream response before completion, Hydra aborts the active LM Studio, OMLX, Ollama, or cloud fetch and stops consuming its stream. A normal completed socket close does not trigger cancellation.
 
 ## App Tools
 
-By default, `serve` starts a local `codex app-server --listen stdio://` bridge and exposes tools from the `codex_apps` MCP server to both Ollama and LM Studio routes. For `codex_apps`, Hydra accepts only entries carrying App Server's connector, active-link, and resource metadata, so uninstalled or unconnected catalog entries are excluded. The individual tool schemas stay deferred behind `tool_search`; Hydra injects only the matching linked tools into the next local-model round instead of placing the entire app catalog in every prompt.
+By default, `serve` starts a local `codex app-server --listen stdio://` bridge and exposes tools from the `codex_apps` MCP server to Ollama, LM Studio, and OMLX routes. For `codex_apps`, Hydra accepts only entries carrying App Server's connector, active-link, and resource metadata, so uninstalled or unconnected catalog entries are excluded. The individual tool schemas stay deferred behind `tool_search`; Hydra injects only the matching linked tools into the next local-model round instead of placing the entire app catalog in every prompt.
 
 That is how local models can discover and call installed plugins and connected apps through the same authenticated App Server catalog Desktop uses. Skills remain part of the Desktop-supplied instructions and can invoke these plugin tools or Desktop-owned tools normally.
 
@@ -283,6 +289,11 @@ base_url = "http://127.0.0.1:11434"
 base_url = "http://127.0.0.1:1234"
 # context_window = 32768
 
+[providers.omlx]
+base_url = "http://127.0.0.1:8000"
+# api_key = "..."
+# context_window = 32768
+
 [app_tools]
 mode = "auto"
 servers = ["codex_apps"]
@@ -305,7 +316,7 @@ node src/cli.js install --config ./profiles/dev.toml
 
 An explicit config defaults generated state to its own directory, which keeps development and test profiles separate from `~/.codex/hydra/`. `codex.home` still determines which Codex installation `install` and `restore` modify. Router settings such as the port and provider URLs take effect when Hydra restarts; `refresh` reloads catalogs and synthetic definitions.
 
-Runtime settings come exclusively from TOML and command flags. Release signing and notarization variables remain build-only inputs.
+When `providers.omlx.api_key` is omitted, Hydra reads the existing key from `~/.omlx/settings.json`. An explicit TOML key takes precedence, which also supports remote or custom OMLX installations. Runtime settings otherwise come exclusively from TOML and command flags. Release signing and notarization variables remain build-only inputs.
 
 Generated files live under:
 
@@ -315,7 +326,7 @@ Generated files live under:
 
 Key files:
 
-- `hydra-models.json`: merged Codex + Ollama + LM Studio model catalog
+- `hydra-models.json`: merged Codex + Ollama + LM Studio + OMLX model catalog
 - `routes.json`: model slug to upstream route table
 - `config.toml`: router settings and synthetic model definitions
 - `selectors/`: installed selector modules, including Money Saver
@@ -358,8 +369,9 @@ Hydra supports the core text Responses flow for:
 - OpenAI cloud models through Codex Desktop's ChatGPT-login backend
 - Ollama local chat models through `/api/chat`
 - LM Studio local chat models through `/v1/chat/completions`
+- OMLX local chat models through authenticated `/v1/chat/completions`
 - Hydra-owned synthetic models configured by TOML and JavaScript selectors
-- Codex app-server tools for local Ollama and LM Studio models
+- Codex app-server tools for local Ollama, LM Studio, and OMLX models
 - Emulated local web-search tools when Hydra's executor is available
 
 Hydra currently rejects WebSocket upgrade attempts with `426 Upgrade Required`; Codex Desktop falls back to the HTTP `POST /responses` path.

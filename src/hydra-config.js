@@ -19,6 +19,9 @@ export const HYDRA_CONFIG_DEFAULTS = Object.freeze({
   ollamaContextWindow: null,
   lmStudioBaseUrl: "http://127.0.0.1:1234",
   lmStudioContextWindow: null,
+  omlxBaseUrl: "http://127.0.0.1:8000",
+  omlxApiKey: null,
+  omlxContextWindow: null,
   appTools: "auto",
   appToolServers: ["codex_apps"],
   webSearchCommands: [[BUNDLED_DDGR_TOKEN]],
@@ -28,10 +31,11 @@ const TOP_LEVEL_KEYS = new Set(["hydra", "codex", "providers", "app_tools", "too
 const TABLE_KEYS = {
   hydra: new Set(["port", "debug", "menubar", "data_dir"]),
   codex: new Set(["home", "binary"]),
-  providers: new Set(["openai", "ollama", "lmstudio"]),
+  providers: new Set(["openai", "ollama", "lmstudio", "omlx"]),
   openai: new Set(["base_url", "api_key"]),
   ollama: new Set(["base_url", "context_window"]),
   lmstudio: new Set(["base_url", "context_window"]),
+  omlx: new Set(["base_url", "api_key", "context_window"]),
   app_tools: new Set(["mode", "servers"]),
   tools: new Set(["web_search_commands"]),
 };
@@ -122,6 +126,7 @@ export function parseHydraSettings(text, { configPath }) {
   const openai = table(providers.openai, "providers.openai");
   const ollama = table(providers.ollama, "providers.ollama");
   const lmstudio = table(providers.lmstudio, "providers.lmstudio");
+  const omlx = table(providers.omlx, "providers.omlx");
   const appTools = table(parsed.app_tools, "app_tools");
   const tools = table(parsed.tools, "tools");
   rejectUnknown(hydra, TABLE_KEYS.hydra, "hydra");
@@ -130,6 +135,7 @@ export function parseHydraSettings(text, { configPath }) {
   rejectUnknown(openai, TABLE_KEYS.openai, "providers.openai");
   rejectUnknown(ollama, TABLE_KEYS.ollama, "providers.ollama");
   rejectUnknown(lmstudio, TABLE_KEYS.lmstudio, "providers.lmstudio");
+  rejectUnknown(omlx, TABLE_KEYS.omlx, "providers.omlx");
   rejectUnknown(appTools, TABLE_KEYS.app_tools, "app_tools");
   rejectUnknown(tools, TABLE_KEYS.tools, "tools");
 
@@ -182,6 +188,18 @@ export function parseHydraSettings(text, { configPath }) {
       HYDRA_CONFIG_DEFAULTS.lmStudioContextWindow,
       { allowZero: true },
     ),
+    omlxBaseUrl: optionalString(
+      omlx.base_url,
+      "providers.omlx.base_url",
+      HYDRA_CONFIG_DEFAULTS.omlxBaseUrl,
+    ),
+    omlxApiKey: optionalString(omlx.api_key, "providers.omlx.api_key", HYDRA_CONFIG_DEFAULTS.omlxApiKey),
+    omlxContextWindow: optionalInteger(
+      omlx.context_window,
+      "providers.omlx.context_window",
+      HYDRA_CONFIG_DEFAULTS.omlxContextWindow,
+      { allowZero: true },
+    ),
     appTools: mode,
     appToolServers: stringArray(appTools.servers, "app_tools.servers", HYDRA_CONFIG_DEFAULTS.appToolServers),
     webSearchCommands: resolveCommands(rawCommands, configPath),
@@ -212,6 +230,9 @@ base_url = ${quote(HYDRA_CONFIG_DEFAULTS.ollamaBaseUrl)}
 [providers.lmstudio]
 base_url = ${quote(HYDRA_CONFIG_DEFAULTS.lmStudioBaseUrl)}
 
+[providers.omlx]
+base_url = ${quote(HYDRA_CONFIG_DEFAULTS.omlxBaseUrl)}
+
 [app_tools]
 mode = ${quote(HYDRA_CONFIG_DEFAULTS.appTools)}
 servers = ${JSON.stringify(HYDRA_CONFIG_DEFAULTS.appToolServers)}
@@ -235,5 +256,14 @@ export async function ensureHydraConfig(configPath) {
 }
 
 export async function loadHydraSettings(configPath) {
-  return parseHydraSettings(await readFile(configPath, "utf8"), { configPath });
+  const settings = parseHydraSettings(await readFile(configPath, "utf8"), { configPath });
+  if (settings.omlxApiKey) return settings;
+  try {
+    const omlxSettings = JSON.parse(await readFile(path.join(homedir(), ".omlx", "settings.json"), "utf8"));
+    const apiKey = omlxSettings?.auth?.api_key;
+    if (typeof apiKey === "string" && apiKey.trim()) settings.omlxApiKey = apiKey.trim();
+  } catch {
+    // OMLX is optional; explicit providers.omlx.api_key remains available for remote or custom installs.
+  }
+  return settings;
 }

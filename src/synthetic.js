@@ -137,10 +137,10 @@ async function machineTelemetry() {
   };
 }
 
-async function providerStatus({ ollamaBaseUrl, lmStudioBaseUrl, fetchImpl, signal }) {
-  const probe = async (provider, baseUrl, endpoint) => {
+async function providerStatus({ ollamaBaseUrl, lmStudioBaseUrl, omlxBaseUrl, omlxApiKey, fetchImpl, signal }) {
+  const probe = async (provider, baseUrl, endpoint, headers = {}) => {
     try {
-      const response = await fetchImpl(new URL(endpoint, baseUrl), { signal });
+      const response = await fetchImpl(new URL(endpoint, baseUrl), { signal, headers });
       if (!response.ok) return [provider, { status: "unavailable", models: {} }];
       const body = await response.json();
       const listed = body.models ?? body.data ?? [];
@@ -149,8 +149,9 @@ async function providerStatus({ ollamaBaseUrl, lmStudioBaseUrl, fetchImpl, signa
       for (const model of listed) {
         const slug = model.key ?? model.id ?? model.name ?? model.model;
         if (!slug) continue;
-        models[slug] = { status: "available", loaded: Boolean(model.loaded_instances?.length) };
-        if (model.loaded_instances?.length) loadedModels.push(slug);
+        const loaded = Boolean(model.loaded ?? model.loaded_instances?.length);
+        models[slug] = { status: "available", loaded };
+        if (loaded) loadedModels.push(slug);
       }
       return [provider, { status: "available", models, loadedModels, queueDepth: body.queue_depth ?? null, baseUrl }];
     } catch {
@@ -160,6 +161,12 @@ async function providerStatus({ ollamaBaseUrl, lmStudioBaseUrl, fetchImpl, signa
   const entries = await Promise.all([
     probe("ollama", ollamaBaseUrl, "/api/tags"),
     probe("lmstudio", lmStudioBaseUrl, "/api/v1/models"),
+    probe(
+      "omlx",
+      omlxBaseUrl,
+      "/v1/models/status",
+      omlxApiKey ? { authorization: `Bearer ${omlxApiKey}` } : {},
+    ),
   ]);
   return {
     openai: { status: "unknown", models: {} },
@@ -193,6 +200,8 @@ export async function buildSelectorContext({
   routes,
   ollamaBaseUrl,
   lmStudioBaseUrl,
+  omlxBaseUrl,
+  omlxApiKey,
   fetchImpl = globalThis.fetch,
   signal,
   source = "codex",
@@ -202,7 +211,7 @@ export async function buildSelectorContext({
   const messages = normalizeSelectorMessages(body);
   const [machine, providers] = await Promise.all([
     telemetryImpl(),
-    providerStatusImpl({ ollamaBaseUrl, lmStudioBaseUrl, fetchImpl, signal }),
+    providerStatusImpl({ ollamaBaseUrl, lmStudioBaseUrl, omlxBaseUrl, omlxApiKey, fetchImpl, signal }),
   ]);
   return {
     version: 1,

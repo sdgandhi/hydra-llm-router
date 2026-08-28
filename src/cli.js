@@ -56,12 +56,14 @@ Options:
   --codex-home <path>      Codex home (default: ~/.codex)
   --ollama-url <url>       Ollama base URL (default: http://127.0.0.1:11434)
   --lmstudio-url <url>     LM Studio base URL (default: http://127.0.0.1:1234)
+  --omlx-url <url>         OMLX base URL (default: http://127.0.0.1:8000)
   --openai-base-url <url>  Cloud upstream URL (default: https://chatgpt.com/backend-api/codex)
   --app-tools <auto|off>   Expose Codex app-server tools to local models (default: auto)
   --app-tool-servers <csv> App-server MCP servers to expose (default: codex_apps)
   --codex-bin <path>       Codex CLI binary for app-server tools (default: codex)
   --ollama-context-window <n>   Override discovered Ollama context windows
   --lmstudio-context-window <n> Override discovered LM Studio context windows
+  --omlx-context-window <n>     Override discovered OMLX context windows
   --web-search-command <cmd>    Search command; repeatable
   --model <slug>           Model for route, prompt, or session
   --input <text>           Prompt text; repeat for session turns
@@ -163,6 +165,13 @@ export async function buildConfig(options = {}) {
       "--lmstudio-context-window",
       saved.lmStudioContextWindow,
     ),
+    omlxBaseUrl: options.omlx_url ?? saved.omlxBaseUrl,
+    omlxApiKey: saved.omlxApiKey,
+    omlxContextWindow: positiveIntegerOption(
+      options.omlx_context_window,
+      "--omlx-context-window",
+      saved.omlxContextWindow,
+    ),
     openaiBaseUrl: options.openai_base_url ?? saved.openaiBaseUrl,
     openaiApiKey: saved.openaiApiKey,
     appTools,
@@ -239,6 +248,7 @@ export async function main() {
         {
           ...config,
           openaiApiKey: config.openaiApiKey ? "<redacted>" : null,
+          omlxApiKey: config.omlxApiKey ? "<redacted>" : null,
           paths: config.paths,
         },
         null,
@@ -283,6 +293,8 @@ export async function main() {
     paths: config.paths,
     ollamaBaseUrl: config.ollamaBaseUrl,
     lmStudioBaseUrl: config.lmStudioBaseUrl,
+    omlxBaseUrl: config.omlxBaseUrl,
+    omlxApiKey: config.omlxApiKey,
     openaiBaseUrl: config.openaiBaseUrl,
     apiKey: config.openaiApiKey,
     webSearchCommands: config.webSearchCommands,

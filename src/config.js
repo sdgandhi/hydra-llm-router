@@ -60,11 +60,14 @@ export async function refreshCatalog(config) {
     sourceCatalog,
     ollamaBaseUrl: config.ollamaBaseUrl,
     lmStudioBaseUrl: config.lmStudioBaseUrl,
+    omlxBaseUrl: config.omlxBaseUrl,
+    omlxApiKey: config.omlxApiKey,
     fetchImpl: globalThis.fetch,
     webSearchReady: toolStatuses.some((tool) => tool.name === "web_search" && tool.status === "ready"),
     syntheticDefinitions: syntheticConfig.definitions,
     ollamaContextWindow: config.ollamaContextWindow,
     lmStudioContextWindow: config.lmStudioContextWindow,
+    omlxContextWindow: config.omlxContextWindow,
   });
   await writeJsonAtomic(config.paths.catalogPath, catalog.catalog);
   await writeJsonAtomic(config.paths.routesPath, catalog.routes);

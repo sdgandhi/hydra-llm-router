@@ -5,6 +5,7 @@ import {
   catalogModelTitles,
   normalizeLMStudioSlug,
   normalizeOllamaSlug,
+  normalizeOmlxSlug,
 } from "../src/catalog.js";
 
 test("normalizes Ollama model names under a collision-free namespace", () => {
@@ -13,6 +14,10 @@ test("normalizes Ollama model names under a collision-free namespace", () => {
 
 test("normalizes LM Studio model names under a collision-free namespace", () => {
   assert.equal(normalizeLMStudioSlug("qwen3-4b"), "lmstudio/qwen3-4b");
+});
+
+test("normalizes OMLX model names under a collision-free namespace", () => {
+  assert.equal(normalizeOmlxSlug("gemma-4-12B-it-MLX-8bit"), "omlx/gemma-4-12B-it-MLX-8bit");
 });
 
 test("extracts catalog model slugs in display order", () => {
@@ -260,6 +265,54 @@ test("adds models advertised by LM Studio", async () => {
     upstreamModel: "qwen3-4b",
     capabilities: { thinking: true, tools: true, vision: true, webSearch: true },
     contextWindow: 65536,
+  });
+});
+
+test("adds OMLX models with detailed capabilities, context, load state, and authentication", async () => {
+  const sourceCatalog = {
+    models: [{ slug: "gpt-test", display_name: "GPT Test", visibility: "list", context_window: 1000 }],
+  };
+  const result = await buildCatalog({
+    sourceCatalog,
+    omlxBaseUrl: "http://127.0.0.1:8000",
+    omlxApiKey: "secret",
+    webSearchReady: true,
+    fetchImpl: async (url, options = {}) => {
+      if (url.pathname === "/api/tags" || url.pathname === "/api/v1/models") throw new Error("offline");
+      assert.equal(url.pathname, "/v1/models/status");
+      assert.equal(options.headers.authorization, "Bearer secret");
+      return {
+        ok: true,
+        json: async () => ({
+          models: [
+            {
+              id: "qwen-mlx",
+              loaded: true,
+              model_type: "vlm",
+              max_context_window: 262144,
+              thinking_default: true,
+            },
+            { id: "embed", model_type: "embedding" },
+          ],
+        }),
+      };
+    },
+  });
+
+  assert.deepEqual(result.catalog.models.map((model) => model.slug), ["gpt-test", "omlx/qwen-mlx"]);
+  const model = result.catalog.models[1];
+  assert.equal(model.display_name, "OMLX: qwen-mlx");
+  assert.equal(model.context_window, 262144);
+  assert.deepEqual(model.input_modalities, ["text", "image"]);
+  assert.equal(model.default_reasoning_level, "medium");
+  assert.equal(model.supports_parallel_tool_calls, true);
+  assert.equal(model.supports_search_tool, true);
+  assert.deepEqual(result.routes["omlx/qwen-mlx"], {
+    provider: "omlx",
+    upstreamModel: "qwen-mlx",
+    capabilities: { thinking: true, tools: true, vision: true, webSearch: true },
+    contextWindow: 262144,
+    loaded: true,
   });
 });
 

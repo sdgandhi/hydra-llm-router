@@ -714,6 +714,62 @@ test("routes streaming LM Studio chat completions as Responses events", async ()
   }
 });
 
+test("routes authenticated OMLX chat completions as Responses responses", async () => {
+  const tempDir = await mkdtemp(join(tmpdir(), "hydra-omlx-router-test-"));
+  const routesPath = join(tempDir, "routes.json");
+  await writeFile(routesPath, JSON.stringify({
+    "omlx/gemma": {
+      provider: "omlx",
+      upstreamModel: "gemma",
+      capabilities: { tools: true, vision: true },
+    },
+  }));
+  const originalFetch = globalThis.fetch;
+  let upstreamRequest;
+  globalThis.fetch = async (url, options) => {
+    assert.equal(String(url), "http://127.0.0.1:8000/v1/chat/completions");
+    assert.equal(options.headers.authorization, "Bearer omlx-secret");
+    upstreamRequest = JSON.parse(options.body);
+    return new Response(JSON.stringify({
+      choices: [{ message: { content: "hello from omlx" } }],
+      usage: { prompt_tokens: 2, completion_tokens: 3, total_tokens: 5 },
+    }), { status: 200, headers: { "content-type": "application/json" } });
+  };
+  let hydra;
+  try {
+    const handler = createHydraHandler({
+      paths: { routesPath },
+      ollamaBaseUrl: "http://127.0.0.1:11434",
+      lmStudioBaseUrl: "http://127.0.0.1:11239",
+      omlxBaseUrl: "http://127.0.0.1:8000",
+      omlxApiKey: "omlx-secret",
+      openaiBaseUrl: "https://chatgpt.com/backend-api/codex",
+    });
+    hydra = createHttpServer(handler);
+    hydra.listen(0, "127.0.0.1");
+    await once(hydra, "listening");
+
+    const response = await originalFetch(`http://127.0.0.1:${hydra.address().port}/responses`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "omlx/gemma", input: "hello", stream: false }),
+    });
+    const body = await response.json();
+    assert.equal(response.status, 200);
+    assert.equal(upstreamRequest.model, "gemma");
+    assert.equal("request_id" in upstreamRequest, false);
+    assert.equal(body.output[0].content[0].text, "hello from omlx");
+    assert.deepEqual(body.usage, { input_tokens: 2, output_tokens: 3, total_tokens: 5 });
+  } finally {
+    if (hydra?.listening) {
+      hydra.close();
+      await Promise.allSettled([once(hydra, "close")]);
+    }
+    globalThis.fetch = originalFetch;
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
 test("emits the first LM Studio text delta before the upstream stream completes", async () => {
   const tempDir = await mkdtemp(join(tmpdir(), "hydra-router-test-"));
   const routesPath = join(tempDir, "routes.json");

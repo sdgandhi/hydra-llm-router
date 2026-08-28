@@ -102,6 +102,7 @@ export function menuBarStatusItems(config) {
     { kind: "info", title: `Cloud: ${config.openaiBaseUrl}` },
     { kind: "info", title: `Ollama: ${config.ollamaBaseUrl}` },
     { kind: "info", title: `LM Studio: ${config.lmStudioBaseUrl}` },
+    { kind: "info", title: `OMLX: ${config.omlxBaseUrl}` },
     { kind: "info", title: `Emulated tools: ${emulatedToolsLabel(config.emulatedToolStatuses ?? [])}` },
     { kind: "info", title: `App tools: ${appToolsLabel(config.appToolStatus)}` },
   ];

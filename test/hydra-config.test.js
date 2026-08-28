@@ -35,6 +35,11 @@ context_window = 8192
 base_url = "http://lmstudio.test"
 context_window = 16384
 
+[providers.omlx]
+base_url = "http://omlx.test"
+api_key = "omlx-secret"
+context_window = 32768
+
 [app_tools]
 mode = "off"
 servers = ["one", "two"]
@@ -55,6 +60,9 @@ web_search_commands = [["./bin/search", "--json"], ["search"]]
   assert.equal(config.openaiApiKey, "secret");
   assert.equal(config.ollamaContextWindow, 8192);
   assert.equal(config.lmStudioContextWindow, 16384);
+  assert.equal(config.omlxBaseUrl, "http://omlx.test");
+  assert.equal(config.omlxApiKey, "omlx-secret");
+  assert.equal(config.omlxContextWindow, 32768);
   assert.equal(config.appTools, "off");
   assert.deepEqual(config.appToolServers, ["one", "two"]);
   assert.deepEqual(config.webSearchCommands, [
@@ -78,6 +86,7 @@ test("creates a complete default config once", async () => {
     assert.equal(config.openaiBaseUrl, "https://chatgpt.com/backend-api/codex");
     assert.equal(config.ollamaBaseUrl, "http://127.0.0.1:11434");
     assert.equal(config.lmStudioBaseUrl, "http://127.0.0.1:1234");
+    assert.equal(config.omlxBaseUrl, "http://127.0.0.1:8000");
     assert.equal(config.appTools, "auto");
     assert.deepEqual(config.appToolServers, ["codex_apps"]);
     assert.match(config.webSearchCommands[0][0], /vendor\/ddgr\/ddgr$/);

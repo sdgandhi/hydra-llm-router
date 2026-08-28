@@ -31,12 +31,20 @@ export function normalizeLMStudioSlug(name) {
   return `lmstudio/${name}`;
 }
 
+export function normalizeOmlxSlug(name) {
+  return `omlx/${name}`;
+}
+
 function localDisplayName(name) {
   return `Ollama: ${name}`;
 }
 
 function lmStudioDisplayName(name) {
   return `LM Studio: ${name}`;
+}
+
+function omlxDisplayName(name) {
+  return `OMLX: ${name}`;
 }
 
 function cloneWithoutNux(model) {
@@ -128,6 +136,16 @@ function lmStudioContextWindow(model, configuredContextWindow = null) {
     model.context_length,
     model.max_tokens,
   ]) {
+    const context = Number(value);
+    if (Number.isFinite(context) && context > 0) return context;
+  }
+  return DEFAULT_LOCAL_CONTEXT_WINDOW;
+}
+
+function omlxContextWindow(model, configuredContextWindow = null) {
+  const configured = Number(configuredContextWindow);
+  if (Number.isFinite(configured) && configured > 0) return configured;
+  for (const value of [model.max_context_window, model.model_context_length, model.max_model_len]) {
     const context = Number(value);
     if (Number.isFinite(context) && context > 0) return context;
   }
@@ -237,6 +255,46 @@ export function lmStudioModelFromTemplate(
   return model;
 }
 
+function omlxRouteCapabilities(model, webSearchReady = false) {
+  const tools = model.model_type === "llm" || model.model_type === "vlm" || !model.model_type;
+  return {
+    thinking: model.thinking_default === true || model.preserve_thinking_default === true,
+    tools,
+    vision: model.model_type === "vlm" || model.engine_type === "vlm",
+    webSearch: tools && Boolean(webSearchReady),
+  };
+}
+
+export function omlxModelFromTemplate(
+  template,
+  omlxModel,
+  priority,
+  { webSearchReady = false, contextWindow = null } = {},
+) {
+  const capabilities = omlxRouteCapabilities(omlxModel, webSearchReady);
+  const model = cloneWithoutNux(template);
+  model.slug = normalizeOmlxSlug(omlxModel.id);
+  model.display_name = omlxDisplayName(omlxModel.id);
+  model.description = `Local OMLX ${omlxModel.model_type === "vlm" ? "vision-language" : "language"} model${omlxModel.loaded ? " (loaded)" : ""}.`;
+  model.visibility = "list";
+  model.supported_in_api = true;
+  model.priority = priority;
+  model.context_window = omlxContextWindow(omlxModel, contextWindow);
+  model.max_context_window = model.context_window;
+  model.default_reasoning_level = capabilities.thinking ? "medium" : "none";
+  model.supported_reasoning_levels = capabilities.thinking ? Object.values(LMSTUDIO_REASONING_LEVELS) : [];
+  model.supports_reasoning_summaries = capabilities.thinking;
+  model.support_verbosity = false;
+  model.default_verbosity = "low";
+  model.supports_search_tool = capabilities.webSearch;
+  model.input_modalities = capabilities.vision ? ["text", "image"] : ["text"];
+  model.web_search_tool_type = "text";
+  model.use_responses_lite = false;
+  model.shell_type = "shell_command";
+  model.supports_parallel_tool_calls = capabilities.tools;
+  return model;
+}
+
 export async function fetchOllamaModels({ ollamaBaseUrl, fetchImpl }) {
   const response = await fetchImpl(new URL("/api/tags", ollamaBaseUrl));
   if (!response.ok) {
@@ -277,6 +335,28 @@ export async function fetchLMStudioModels({ lmStudioBaseUrl, fetchImpl }) {
   return Array.isArray(body.data) ? body.data.filter((model) => typeof model?.id === "string" && model.id) : [];
 }
 
+export async function fetchOmlxModels({ omlxBaseUrl, omlxApiKey, fetchImpl }) {
+  const headers = omlxApiKey ? { authorization: `Bearer ${omlxApiKey}` } : {};
+  const statusResponse = await fetchImpl(new URL("/v1/models/status", omlxBaseUrl), { headers });
+  if (statusResponse.ok) {
+    const body = await statusResponse.json();
+    return Array.isArray(body.models)
+      ? body.models.filter((model) =>
+          typeof model?.id === "string"
+          && model.id
+          && !model.is_helper
+          && !model.is_hidden
+          && (!model.model_type || model.model_type === "llm" || model.model_type === "vlm"))
+      : [];
+  }
+  const compatibleResponse = await fetchImpl(new URL("/v1/models", omlxBaseUrl), { headers });
+  if (!compatibleResponse.ok) throw new Error(`OMLX model query failed: HTTP ${compatibleResponse.status}`);
+  const body = await compatibleResponse.json();
+  return Array.isArray(body.data)
+    ? body.data.filter((model) => typeof model?.id === "string" && model.id)
+    : [];
+}
+
 function lmStudioRouteCapabilities(model, webSearchReady = false) {
   const advertised = model.capabilities;
   const tools = advertised ? Boolean(advertised.trained_for_tool_use) : true;
@@ -306,11 +386,14 @@ export async function buildCatalog({
   sourceCatalog,
   ollamaBaseUrl,
   lmStudioBaseUrl,
+  omlxBaseUrl,
+  omlxApiKey,
   fetchImpl,
   webSearchReady = false,
   syntheticDefinitions = [],
   ollamaContextWindow: configuredOllamaContextWindow = null,
   lmStudioContextWindow: configuredLMStudioContextWindow = null,
+  omlxContextWindow: configuredOmlxContextWindow = null,
 }) {
   if (!sourceCatalog?.models?.length) {
     throw new Error("Codex source catalog must contain at least one model");
@@ -330,6 +413,14 @@ export async function buildCatalog({
   } catch {
     lmStudioModels = [];
   }
+  let omlxModels = [];
+  if (omlxBaseUrl) {
+    try {
+      omlxModels = await fetchOmlxModels({ omlxBaseUrl, omlxApiKey, fetchImpl });
+    } catch {
+      omlxModels = [];
+    }
+  }
   const ollamaModelInfo = await fetchOllamaModelInfoMap({ ollamaBaseUrl, ollamaModels, fetchImpl });
 
   const ollamaCatalogModels = ollamaModels.map((model, index) =>
@@ -343,6 +434,12 @@ export async function buildCatalog({
     lmStudioModelFromTemplate(template, model, 2000 + index, {
       webSearchReady,
       contextWindow: configuredLMStudioContextWindow,
+    }),
+  );
+  const omlxCatalogModels = omlxModels.map((model, index) =>
+    omlxModelFromTemplate(template, model, 3000 + index, {
+      webSearchReady,
+      contextWindow: configuredOmlxContextWindow,
     }),
   );
   const routes = {};
@@ -372,10 +469,19 @@ export async function buildCatalog({
       contextWindow: lmStudioContextWindow(model, configuredLMStudioContextWindow),
     };
   }
+  for (const model of omlxModels) {
+    routes[normalizeOmlxSlug(model.id)] = {
+      provider: "omlx",
+      upstreamModel: model.id,
+      capabilities: omlxRouteCapabilities(model, webSearchReady),
+      contextWindow: omlxContextWindow(model, configuredOmlxContextWindow),
+      loaded: Boolean(model.loaded),
+    };
+  }
 
   const syntheticCatalogModels = [];
   for (const [index, definition] of syntheticDefinitions.entries()) {
-    const synthetic = syntheticModelFromTemplate(template, definition, 3000 + index, routes);
+    const synthetic = syntheticModelFromTemplate(template, definition, 4000 + index, routes);
     syntheticCatalogModels.push(synthetic.model);
     routes[definition.slug] = {
       provider: "synthetic",
@@ -390,7 +496,13 @@ export async function buildCatalog({
       fetched_at: new Date().toISOString(),
       etag: `hydra-${Date.now()}`,
       client_version: sourceCatalog.client_version ?? "hydra",
-      models: [...cloudModels, ...ollamaCatalogModels, ...lmStudioCatalogModels, ...syntheticCatalogModels],
+      models: [
+        ...cloudModels,
+        ...ollamaCatalogModels,
+        ...lmStudioCatalogModels,
+        ...omlxCatalogModels,
+        ...syntheticCatalogModels,
+      ],
     },
     routes,
   };

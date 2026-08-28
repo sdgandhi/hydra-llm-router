@@ -1405,6 +1405,9 @@ async function callLMStudio({
   body,
   route,
   lmStudioBaseUrl,
+  provider = "lmstudio",
+  localBaseUrl = lmStudioBaseUrl,
+  providerApiKey = null,
   res,
   debugAuth,
   appServerBridge,
@@ -1413,7 +1416,7 @@ async function callLMStudio({
 }) {
   const stream = body.stream !== false;
   const id = responseId();
-  const url = new URL("/v1/chat/completions", lmStudioBaseUrl);
+  const url = new URL("/v1/chat/completions", localBaseUrl);
   const toolBroker = await createLocalToolBroker({ req, body, appServerBridge, debugAuth, webSearchCommands });
   let messages;
   try {
@@ -1440,13 +1443,13 @@ async function callLMStudio({
     // LM Studio needs a request ID to stop prompt processing when the HTTP
     // client disconnects. Without one, recent runtimes treat cancellation as
     // a deprecated no-op and continue evaluating the prompt.
-    upstreamBody.request_id = `hydra-${randomUUID()}`;
+    if (provider === "lmstudio") upstreamBody.request_id = `hydra-${randomUUID()}`;
     debugLogUpstream({
       enabled: debugAuth,
       req,
       route,
       upstream: {
-        provider: "lmstudio",
+        provider,
         url: url.toString(),
         requestBytes: Buffer.byteLength(JSON.stringify(upstreamBody)),
         stream,
@@ -1458,7 +1461,10 @@ async function callLMStudio({
 
     const response = await fetch(url, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: {
+        "content-type": "application/json",
+        ...(providerApiKey ? { authorization: `Bearer ${providerApiKey}` } : {}),
+      },
       body: JSON.stringify(upstreamBody),
       signal,
     });
@@ -1468,7 +1474,7 @@ async function callLMStudio({
       req,
       route,
       upstream: {
-        provider: "lmstudio",
+        provider,
         url: url.toString(),
         status: response.status,
         contentType: response.headers.get("content-type"),
@@ -1509,7 +1515,7 @@ async function callLMStudio({
     const text = await response.text();
     jsonResponse(req, res, response.status, { error: { message: text || response.statusText } }, debugAuth, {
       route,
-      upstream: { provider: "lmstudio", status: response.status },
+      upstream: { provider, status: response.status },
     });
     return;
   }
@@ -1553,7 +1559,7 @@ async function callLMStudio({
           },
         },
         debugAuth,
-        { route, upstream: { provider: "lmstudio", status: response.status } },
+        { route, upstream: { provider, status: response.status } },
       );
       return;
     }
@@ -1576,7 +1582,7 @@ async function callLMStudio({
           }
         : { error: { message: text || response.statusText } },
       debugAuth,
-      { route, upstream: { provider: "lmstudio", status: response.status } },
+      { route, upstream: { provider, status: response.status } },
     );
     return;
   }
@@ -1728,7 +1734,7 @@ async function callLMStudio({
     status: 200,
     route,
     upstream: {
-      provider: "lmstudio",
+      provider,
       status: response.status,
       stream: true,
       contentChars: content.length,
@@ -1899,6 +1905,8 @@ async function dispatchDirectRoute({
   route,
   ollamaBaseUrl,
   lmStudioBaseUrl,
+  omlxBaseUrl,
+  omlxApiKey,
   openaiBaseUrl,
   apiKey,
   res,
@@ -1926,6 +1934,21 @@ async function dispatchDirectRoute({
       body,
       route,
       lmStudioBaseUrl,
+      res,
+      debugAuth,
+      appServerBridge,
+      webSearchCommands,
+      signal,
+    });
+  }
+  if (route.provider === "omlx") {
+    return callLMStudio({
+      req,
+      body,
+      route,
+      provider: "omlx",
+      localBaseUrl: omlxBaseUrl,
+      providerApiKey: omlxApiKey,
       res,
       debugAuth,
       appServerBridge,
@@ -1984,6 +2007,8 @@ async function callSelectorModel({
   routes,
   ollamaBaseUrl,
   lmStudioBaseUrl,
+  omlxBaseUrl,
+  omlxApiKey,
   openaiBaseUrl,
   apiKey,
   signal,
@@ -2014,8 +2039,9 @@ async function callSelectorModel({
       stream: false,
       think: false,
     };
-  } else if (route.provider === "lmstudio") {
-    url = new URL("/v1/chat/completions", lmStudioBaseUrl);
+  } else if (route.provider === "lmstudio" || route.provider === "omlx") {
+    url = new URL("/v1/chat/completions", route.provider === "omlx" ? omlxBaseUrl : lmStudioBaseUrl);
+    if (route.provider === "omlx" && omlxApiKey) headers.authorization = `Bearer ${omlxApiKey}`;
     upstreamBody = {
       model: route.upstreamModel,
       messages: [{ role: "user", content: prompt }],
@@ -2024,8 +2050,8 @@ async function callSelectorModel({
       max_tokens: 256,
       reasoning_effort: "none",
       chat_template_kwargs: { enable_thinking: false },
-      request_id: `hydra-selector-${randomUUID()}`,
     };
+    if (route.provider === "lmstudio") upstreamBody.request_id = `hydra-selector-${randomUUID()}`;
   } else {
     url = upstreamResponsesUrl("/responses", openaiBaseUrl);
     headers = forwardedHeaders(req.headers);
@@ -2075,7 +2101,7 @@ async function callSelectorModel({
   }
   const output = route.provider === "ollama"
     ? data?.message?.content
-    : route.provider === "lmstudio"
+    : route.provider === "lmstudio" || route.provider === "omlx"
       ? lmStudioMessageText(data?.choices?.[0]?.message?.content)
       : responseStreamOutputText(responseText);
   if (typeof output !== "string" || !output.trim()) {
@@ -2180,6 +2206,8 @@ async function handleSyntheticRequest({
   signal,
   ollamaBaseUrl,
   lmStudioBaseUrl,
+  omlxBaseUrl,
+  omlxApiKey,
   openaiBaseUrl,
   apiKey,
   debugAuth,
@@ -2238,6 +2266,8 @@ async function handleSyntheticRequest({
       routes,
       ollamaBaseUrl,
       lmStudioBaseUrl,
+      omlxBaseUrl,
+      omlxApiKey,
       signal,
       source,
       ...syntheticContextOptions,
@@ -2256,6 +2286,8 @@ async function handleSyntheticRequest({
           routes,
           ollamaBaseUrl,
           lmStudioBaseUrl,
+          omlxBaseUrl,
+          omlxApiKey,
           openaiBaseUrl,
           apiKey,
           signal: selectorSignal,
@@ -2317,6 +2349,8 @@ async function handleSyntheticRequest({
     body: routedBody,
     ollamaBaseUrl,
     lmStudioBaseUrl,
+    omlxBaseUrl,
+    omlxApiKey,
     openaiBaseUrl,
     apiKey,
     debugAuth,
@@ -2422,6 +2456,8 @@ export function createHydraHandler({
   paths,
   ollamaBaseUrl,
   lmStudioBaseUrl,
+  omlxBaseUrl,
+  omlxApiKey,
   openaiBaseUrl,
   apiKey,
   webSearchCommands = [],
@@ -2597,6 +2633,8 @@ export function createHydraHandler({
           signal: cancellation.signal,
           ollamaBaseUrl,
           lmStudioBaseUrl,
+          omlxBaseUrl,
+          omlxApiKey,
           openaiBaseUrl,
           apiKey,
           debugAuth,
@@ -2621,6 +2659,8 @@ export function createHydraHandler({
           signal: cancellation.signal,
           ollamaBaseUrl,
           lmStudioBaseUrl,
+          omlxBaseUrl,
+          omlxApiKey,
           openaiBaseUrl,
           apiKey,
           debugAuth,
@@ -2639,6 +2679,8 @@ export function createHydraHandler({
         route,
         ollamaBaseUrl,
         lmStudioBaseUrl,
+        omlxBaseUrl,
+        omlxApiKey,
         openaiBaseUrl,
         apiKey,
         res,

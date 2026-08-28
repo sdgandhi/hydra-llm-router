@@ -43,6 +43,7 @@ Use `scripts/dev-codex` directly when another development tool needs a Codex CLI
 - Cloud model routes use provider `openai` and keep the original Codex catalog slugs.
 - Local Ollama model routes use provider `ollama` and slugs prefixed with `ollama/`.
 - Local LM Studio model routes use provider `lmstudio` and slugs prefixed with `lmstudio/`.
+- Local OMLX model routes use provider `omlx` and slugs prefixed with `omlx/`.
 - Keep local prefixes collision-free; route slugs are the source of truth in `~/.codex/hydra/routes.json`.
 
 ## Important Desktop Behaviors
@@ -51,7 +52,7 @@ Use `scripts/dev-codex` directly when another development tool needs a Codex CLI
 - The correct default cloud upstream for Desktop OAuth is `https://chatgpt.com/backend-api/codex`.
 - Forwarding Desktop OAuth tokens to `https://api.openai.com/v1` returns `401`; only use that upstream with `OPENAI_API_KEY`.
 - Desktop sends `POST /responses` for the working request path.
-- Every Responses request owns an `AbortController`. Abort upstream LM Studio, Ollama, and cloud fetches when the request is aborted or the downstream response closes before `res.writableEnded`; remove listeners when the request finishes.
+- Every Responses request owns an `AbortController`. Abort upstream LM Studio, OMLX, Ollama, and cloud fetches when the request is aborted or the downstream response closes before `res.writableEnded`; remove listeners when the request finishes.
 - Client-driven `AbortError` is an expected cancellation outcome. Do not write a 500 after the downstream client is gone, and do not treat the normal close after `res.end()` as cancellation.
 - Desktop may first attempt a WebSocket upgrade to `/responses` with `openai-beta: responses_websockets=2026-02-06`; Hydra currently rejects upgrades with `426` so Desktop falls back to HTTP `POST /responses`.
 - Desktop compresses request bodies with `content-encoding: zstd`; always decode before JSON parsing.
@@ -61,13 +62,14 @@ Use `scripts/dev-codex` directly when another development tool needs a Codex CLI
 ## Catalog Notes
 
 - Build the cloud catalog from Codex's existing `~/.codex/models_cache.json`.
-- Local Ollama and LM Studio catalog entries are cloned from a visible cloud model template, then adjusted for local capabilities.
+- Local Ollama, LM Studio, and OMLX catalog entries are cloned from a visible cloud model template, then adjusted for local capabilities.
 - Ollama discovery uses `/api/tags`, with per-model capability/context metadata from `/api/show`.
 - LM Studio discovery prefers `/api/v1/models` and falls back to the OpenAI-compatible `/v1/models` endpoint. Only `llm` models from the native endpoint are included.
-- Local catalog entries advertise text, vision, reasoning, and tool support from provider metadata; local web search is only advertised for Ollama when the emulation is ready.
-- LM Studio requests use `/v1/chat/completions`; Ollama requests use `/api/chat`. Both are translated to/from Codex Responses-shaped requests.
-- Normalize Responses reasoning from `reasoning.effort`, `reasoning_effort`, and `reasoning_level`. For LM Studio, explicit `none` sets `chat_template_kwargs.enable_thinking` to `false` and forwards `reasoning_effort: "none"`; non-`none` sets thinking to `true` and forwards the normalized effort only when the route advertises thinking support.
-- Streaming LM Studio requests must remain incremental: forward `stream: true`, emit text deltas as `response.output_text.delta`, emit reasoning summaries only when thinking was enabled, then finish with `response.completed` and `data: [DONE]`.
+- OMLX discovery uses authenticated `/v1/models/status` and falls back to `/v1/models`; Hydra reads the local API key from `~/.omlx/settings.json` when the OMLX provider does not specify one.
+- Local catalog entries advertise text, vision, reasoning, and tool support from provider metadata; local web search is advertised only when Hydra's emulation is ready.
+- LM Studio and OMLX requests use `/v1/chat/completions`; Ollama requests use `/api/chat`. All are translated to/from Codex Responses-shaped requests.
+- Normalize Responses reasoning from `reasoning.effort`, `reasoning_effort`, and `reasoning_level`. For LM Studio and OMLX, explicit `none` sets `chat_template_kwargs.enable_thinking` to `false` and forwards `reasoning_effort: "none"`; non-`none` sets thinking to `true` and forwards the normalized effort only when the route advertises thinking support.
+- Streaming LM Studio and OMLX requests must remain incremental: forward `stream: true`, emit text deltas as `response.output_text.delta`, emit reasoning summaries only when thinking was enabled, then finish with `response.completed` and `data: [DONE]`.
 - `web_search_tool_type` must be a supported value such as `text`; using `unsupported` made Codex Desktop fail to parse the catalog.
 - Offline providers or providers with no chat models contribute no entries; cloud catalog generation must still succeed.
 
@@ -94,7 +96,7 @@ For live CLI verification:
 1. Complete the isolated setup above once.
 2. Start development Hydra with `npm run dev:serve`.
 3. Use `npm run dev:route -- --model <slug> --input <text>` to exercise a selector without full Codex agent context or a generated answer.
-4. Use `npm run dev:prompt -- --model <slug> --input <text>` for cloud, Ollama, and LM Studio smoke tests.
+4. Use `npm run dev:prompt -- --model <slug> --input <text>` for cloud, Ollama, LM Studio, and OMLX smoke tests.
 5. Use repeated `--input` values with `npm run dev:session -- --model <slug> --input <text>` for full multi-turn verification.
 6. Confirm `~/.codex-hydra-dev/hydra/hydra.log` shows upstream `status: 200` and the expected provider endpoint.
 7. If app tools are enabled, select a tool-capable local model and verify an app-server tool call; verify `--app-tools off` disables the bridge.

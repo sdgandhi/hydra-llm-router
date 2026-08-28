@@ -164,6 +164,7 @@ test("serve status items match the menubar dropdown content", () => {
       openaiBaseUrl: "https://chatgpt.com/backend-api/codex",
       ollamaBaseUrl: "http://127.0.0.1:11434",
       lmStudioBaseUrl: "http://127.0.0.1:11239",
+      omlxBaseUrl: "http://127.0.0.1:8000",
       debugAuth: true,
       catalog: {
         models: [
@@ -216,6 +217,7 @@ test("serve status items match the menubar dropdown content", () => {
       { kind: "info", title: "Cloud: https://chatgpt.com/backend-api/codex" },
       { kind: "info", title: "Ollama: http://127.0.0.1:11434" },
       { kind: "info", title: "LM Studio: http://127.0.0.1:11239" },
+      { kind: "info", title: "OMLX: http://127.0.0.1:8000" },
       {
         kind: "info",
         title: "Emulated tools: web_search: unavailable (no executable search command found), tool_search: ready",
