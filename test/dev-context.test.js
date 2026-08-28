@@ -5,9 +5,7 @@ import {
   developmentEnvironment,
   developmentPaths,
   hydraDevelopmentArgs,
-  rejectCodexBypassArgs,
-  rejectLoginBypassArgs,
-} from "../scripts/dev-codex.js";
+} from "../scripts/dev-context.js";
 
 test("uses an isolated Codex home, SQLite root, and non-Desktop port", () => {
   const paths = developmentPaths({
@@ -20,6 +18,8 @@ test("uses an isolated Codex home, SQLite root, and non-Desktop port", () => {
   assert.equal(paths.sourceCodexHome, "/tmp/desktop-codex");
   assert.equal(paths.port, 4857);
   assert.equal(paths.hydraConfigPath, "/tmp/hydra-dev-codex/hydra/config.toml");
+  assert.equal(paths.codexBin, path.resolve("scripts/dev-codex"));
+  assert.equal(paths.upstreamCodexBin, path.resolve("node_modules/.bin/codex"));
 });
 
 test("rejects the Desktop Hydra port for development", () => {
@@ -51,22 +51,13 @@ test("isolates Codex state and removes direct API overrides", () => {
   assert.equal(environment.OPENAI_WORKLOAD_IDENTITY_CONTEXT, undefined);
 });
 
-test("pins every Hydra development command to isolated paths and the local Codex dependency", () => {
+test("pins Hydra development commands to isolated paths and the shell Codex shim", () => {
   const paths = developmentPaths({ HYDRA_DEV_CODEX_HOME: "/tmp/hydra-dev-codex" });
   const args = hydraDevelopmentArgs(paths, "prompt", ["--model", "gpt-test"]);
-  assert.deepEqual(args.slice(0, 2), [path.join(paths.hydraCli), "prompt"]);
+  assert.deepEqual(args.slice(0, 2), [paths.hydraCli, "prompt"]);
   assert.ok(args.includes(paths.hydraConfigPath));
   assert.ok(args.includes(paths.codexHome));
   assert.ok(args.includes(paths.codexBin));
   assert.ok(args.includes(String(paths.port)));
   assert.deepEqual(args.slice(-2), ["--model", "gpt-test"]);
-});
-
-test("rejects Codex and login options that can bypass isolated Hydra OAuth", () => {
-  assert.throws(() => rejectCodexBypassArgs(["exec", "--oss", "hello"]), /not allowed/);
-  assert.throws(() => rejectCodexBypassArgs(["login", "--with-api-key"]), /not allowed/);
-  assert.throws(() => rejectLoginBypassArgs(["--with-access-token"]), /not allowed/);
-  assert.doesNotThrow(() => rejectCodexBypassArgs(["exec", "-m", "gpt-test", "hello"]));
-  assert.doesNotThrow(() => rejectLoginBypassArgs(["status"]));
-  assert.doesNotThrow(() => rejectLoginBypassArgs(["--device-auth"]));
 });

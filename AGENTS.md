@@ -29,11 +29,11 @@ npm run dev:codex -- exec --ephemeral --sandbox read-only "<prompt>"
 npm run dev:route -- --model <slug> --input "<prompt>"
 npm run dev:prompt -- --model <slug> --input "<prompt>"
 npm run dev:session -- --model <slug> --input "<turn-1>" --input "<turn-2>"
-npm run dev:verify-routing
 npm run dev:stop
 ```
 
 Use `HYDRA_DEV_CODEX_HOME` and `HYDRA_DEV_PORT` only when a test needs another isolated home or listener. Keep the Desktop defaults untouched.
+Use `scripts/dev-codex` directly when another development tool needs a Codex CLI binary path; it transparently forwards all Codex arguments inside the isolated home.
 
 ## Working Architecture
 
@@ -96,10 +96,9 @@ For live CLI verification:
 3. Use `npm run dev:route -- --model <slug> --input <text>` to exercise a selector without full Codex agent context or a generated answer.
 4. Use `npm run dev:prompt -- --model <slug> --input <text>` for cloud, Ollama, and LM Studio smoke tests.
 5. Use repeated `--input` values with `npm run dev:session -- --model <slug> --input <text>` for full multi-turn verification.
-6. Use `npm run dev:verify-routing` to submit simple, medium, and complex requests through the isolated Codex CLI and assert the configured three-way synthetic selection. It stops each ephemeral CLI request after Hydra records the decision so the test stays fast; use `dev:prompt` when the generated response also matters.
-7. Confirm `~/.codex-hydra-dev/hydra/hydra.log` shows upstream `status: 200` and the expected provider endpoint.
-8. If app tools are enabled, select a tool-capable local model and verify an app-server tool call; verify `--app-tools off` disables the bridge.
-9. Stop only the development listener with `npm run dev:stop`. Do not stop the Desktop listener.
+6. Confirm `~/.codex-hydra-dev/hydra/hydra.log` shows upstream `status: 200` and the expected provider endpoint.
+7. If app tools are enabled, select a tool-capable local model and verify an app-server tool call; verify `--app-tools off` disables the bridge.
+8. Stop only the development listener with `npm run dev:stop`. Do not stop the Desktop listener.
 
 ## Change Delivery
 

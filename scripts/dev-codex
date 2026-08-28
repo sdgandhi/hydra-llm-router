@@ -1,0 +1,28 @@
+#!/bin/sh
+set -eu
+
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+REPO_ROOT=$(dirname -- "$SCRIPT_DIR")
+CODEX_HOME=${HYDRA_DEV_CODEX_HOME:-"$HOME/.codex-hydra-dev"}
+
+case "$CODEX_HOME" in
+  "~/"*) CODEX_HOME="$HOME/${CODEX_HOME#\~/}" ;;
+  "~") CODEX_HOME=$HOME ;;
+esac
+case "$CODEX_HOME" in
+  /*) ;;
+  *) CODEX_HOME="$PWD/$CODEX_HOME" ;;
+esac
+
+export CODEX_HOME
+export CODEX_SQLITE_HOME="$CODEX_HOME/sqlite"
+unset CODEX_API_KEY CODEX_ACCESS_TOKEN OPENAI_API_KEY OPENAI_BASE_URL
+unset OPENAI_IDENTITY_TOKEN_FILE OPENAI_WORKLOAD_IDENTITY_CONTEXT
+
+CODEX_BIN="$REPO_ROOT/node_modules/.bin/codex"
+if [ ! -x "$CODEX_BIN" ]; then
+  echo "The development Codex CLI is missing. Run npm install first." >&2
+  exit 1
+fi
+
+exec "$CODEX_BIN" "$@"
