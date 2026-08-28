@@ -55,7 +55,7 @@ Options:
   --port <n>               Router port (default: 3847)
   --codex-home <path>      Codex home (default: ~/.codex)
   --ollama-url <url>       Ollama base URL (default: http://127.0.0.1:11434)
-  --lmstudio-url <url>     LM Studio base URL (default: http://127.0.0.1:11239)
+  --lmstudio-url <url>     LM Studio base URL (default: http://127.0.0.1:1234)
   --openai-base-url <url>  Cloud upstream URL (default: https://chatgpt.com/backend-api/codex)
   --app-tools <auto|off>   Expose Codex app-server tools to local models (default: auto)
   --app-tool-servers <csv> App-server MCP servers to expose (default: codex_apps)

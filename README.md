@@ -280,7 +280,7 @@ base_url = "http://127.0.0.1:11434"
 # context_window = 32768
 
 [providers.lmstudio]
-base_url = "http://127.0.0.1:11239"
+base_url = "http://127.0.0.1:1234"
 # context_window = 32768
 
 [app_tools]

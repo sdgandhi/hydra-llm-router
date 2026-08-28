@@ -17,7 +17,7 @@ export const HYDRA_CONFIG_DEFAULTS = Object.freeze({
   openaiApiKey: null,
   ollamaBaseUrl: "http://127.0.0.1:11434",
   ollamaContextWindow: null,
-  lmStudioBaseUrl: "http://127.0.0.1:11239",
+  lmStudioBaseUrl: "http://127.0.0.1:1234",
   lmStudioContextWindow: null,
   appTools: "auto",
   appToolServers: ["codex_apps"],

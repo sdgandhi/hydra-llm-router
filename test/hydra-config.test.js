@@ -77,7 +77,7 @@ test("creates a complete default config once", async () => {
     assert.equal(config.port, 3847);
     assert.equal(config.openaiBaseUrl, "https://chatgpt.com/backend-api/codex");
     assert.equal(config.ollamaBaseUrl, "http://127.0.0.1:11434");
-    assert.equal(config.lmStudioBaseUrl, "http://127.0.0.1:11239");
+    assert.equal(config.lmStudioBaseUrl, "http://127.0.0.1:1234");
     assert.equal(config.appTools, "auto");
     assert.deepEqual(config.appToolServers, ["codex_apps"]);
     assert.match(config.webSearchCommands[0][0], /vendor\/ddgr\/ddgr$/);
