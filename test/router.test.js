@@ -105,6 +105,103 @@ test("decodes zstd-compressed request bodies from Codex Desktop", () => {
   assert.equal(decodeBody(compressed, "zstd").toString("utf8"), payload.toString("utf8"));
 });
 
+test("rejects upstream state references on local routes", async () => {
+  const tempDir = await mkdtemp(join(tmpdir(), "hydra-state-local-"));
+  const routesPath = join(tempDir, "routes.json");
+  await writeFile(routesPath, JSON.stringify({
+    "ollama/tiny": { provider: "ollama", upstreamModel: "tiny", capabilities: {} },
+  }));
+  const originalFetch = globalThis.fetch;
+  let upstreamCalls = 0;
+  globalThis.fetch = async () => {
+    upstreamCalls += 1;
+    throw new Error("local state request must not reach upstream");
+  };
+  let hydra;
+  try {
+    const handler = createHydraHandler({
+      paths: { routesPath },
+      ollamaBaseUrl: "http://127.0.0.1:11434",
+      lmStudioBaseUrl: "http://127.0.0.1:11239",
+      openaiBaseUrl: "https://chatgpt.com/backend-api/codex",
+    });
+    hydra = createHttpServer(handler);
+    hydra.listen(0, "127.0.0.1");
+    await once(hydra, "listening");
+    const endpoint = `http://127.0.0.1:${hydra.address().port}/responses`;
+
+    for (const state of [{ previous_response_id: "resp_cloud" }, { conversation: "conv_cloud" }]) {
+      const response = await originalFetch(endpoint, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ model: "ollama/tiny", input: "continue", ...state }),
+      });
+      const body = await response.json();
+      assert.equal(response.status, 400);
+      assert.equal(body.error.code, "unsupported_state_reference");
+      assert.match(body.error.message, /complete history in input/);
+    }
+    assert.equal(upstreamCalls, 0);
+  } finally {
+    if (hydra?.listening) {
+      hydra.close();
+      await Promise.allSettled([once(hydra, "close")]);
+    }
+    globalThis.fetch = originalFetch;
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("accepts Codex-style stateless follow-ups containing complete history", async () => {
+  const tempDir = await mkdtemp(join(tmpdir(), "hydra-stateless-history-"));
+  const routesPath = join(tempDir, "routes.json");
+  await writeFile(routesPath, JSON.stringify({
+    "lmstudio/tiny": { provider: "lmstudio", upstreamModel: "tiny", capabilities: {} },
+  }));
+  const originalFetch = globalThis.fetch;
+  let upstreamBody;
+  globalThis.fetch = async (_url, options) => {
+    upstreamBody = JSON.parse(options.body);
+    return new Response(JSON.stringify({ choices: [{ message: { content: "four" } }] }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  };
+  let hydra;
+  try {
+    const handler = createHydraHandler({
+      paths: { routesPath },
+      ollamaBaseUrl: "http://127.0.0.1:11434",
+      lmStudioBaseUrl: "http://127.0.0.1:11239",
+      openaiBaseUrl: "https://chatgpt.com/backend-api/codex",
+    });
+    hydra = createHttpServer(handler);
+    hydra.listen(0, "127.0.0.1");
+    await once(hydra, "listening");
+    const input = [
+      { role: "user", content: "What is two plus two?" },
+      { role: "assistant", content: "It is 4." },
+      { role: "user", content: "Spell that number." },
+    ];
+    const response = await originalFetch(`http://127.0.0.1:${hydra.address().port}/responses`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "session-id": "stateless-codex-session" },
+      body: JSON.stringify({ model: "lmstudio/tiny", input, stream: false }),
+    });
+    assert.equal(response.status, 200);
+    assert.deepEqual(upstreamBody.messages, input);
+    assert.equal("previous_response_id" in upstreamBody, false);
+    assert.equal("conversation" in upstreamBody, false);
+  } finally {
+    if (hydra?.listening) {
+      hydra.close();
+      await Promise.allSettled([once(hydra, "close")]);
+    }
+    globalThis.fetch = originalFetch;
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
 test("strips local-model channel control markers", () => {
   assert.equal(stripLocalControlMarkers("<|channel>thought\n<channel|>Hello"), "Hello");
   assert.equal(stripLocalControlMarkers("Before <|channel|>analysis<|message|>after"), "Before after");
@@ -1732,6 +1829,195 @@ test("calls an OpenAI selector model with a streaming Responses request", async 
     assert.deepEqual(calls[0].body.input, [{ role: "user", content: "choose" }]);
     assert.equal(calls[0].headers.accept, "text/event-stream");
     assert.equal(calls[1].body.model, "tiny");
+  } finally {
+    if (hydra?.listening) {
+      hydra.close();
+      await Promise.allSettled([once(hydra, "close")]);
+    }
+    globalThis.fetch = originalFetch;
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("pins a synthetic Codex session to the OpenAI route that owns previous response state", async () => {
+  const tempDir = await mkdtemp(join(tmpdir(), "hydra-synthetic-state-"));
+  const routesPath = join(tempDir, "routes.json");
+  const selectorPath = join(tempDir, "selector.js");
+  const selectorSource = `export default (context) =>
+    context.messages.latestUser?.content.includes("first") ? "gpt-a" : "gpt-b";\n`;
+  await writeFile(selectorPath, selectorSource);
+  await writeFile(routesPath, JSON.stringify({
+    "gpt-a": {
+      provider: "openai",
+      upstreamModel: "gpt-a-upstream",
+      capabilities: { tools: true, vision: true, thinking: true },
+      contextWindow: 100000,
+    },
+    "gpt-b": {
+      provider: "openai",
+      upstreamModel: "gpt-b-upstream",
+      capabilities: { tools: true, vision: true, thinking: true },
+      contextWindow: 100000,
+    },
+    "hydra/stateful": {
+      provider: "synthetic",
+      definition: {
+        slug: "hydra/stateful",
+        selectorPath,
+        selectorHash: createHash("sha256").update(selectorSource).digest("hex"),
+        candidates: ["gpt-a", "gpt-b"],
+        fallbackModel: "gpt-b",
+        effectiveCandidates: ["gpt-a", "gpt-b"],
+        routingScope: "user_turn",
+        stickyToolContinuations: false,
+        selectorTimeoutMs: 1000,
+        retryCount: 0,
+        retryDelayMs: 0,
+      },
+    },
+  }));
+  const originalFetch = globalThis.fetch;
+  const upstreamRequests = [];
+  globalThis.fetch = async (_url, options) => {
+    const body = JSON.parse(options.body);
+    upstreamRequests.push(body);
+    const id = `resp_${body.model}_${upstreamRequests.length}`;
+    return new Response([
+      "event: response.created",
+      `data: ${JSON.stringify({ type: "response.created", response: { id, status: "in_progress" } })}`,
+      "",
+      "event: response.completed",
+      `data: ${JSON.stringify({ type: "response.completed", response: { id, status: "completed", output: [] } })}`,
+      "",
+      "data: [DONE]",
+      "",
+    ].join("\n"), {
+      status: 200,
+      headers: { "content-type": "text/event-stream" },
+    });
+  };
+  let hydra;
+  try {
+    const handler = createHydraHandler({
+      paths: { routesPath },
+      ollamaBaseUrl: "http://127.0.0.1:11434",
+      lmStudioBaseUrl: "http://127.0.0.1:11239",
+      openaiBaseUrl: "https://chatgpt.com/backend-api/codex",
+      syntheticContextOptions: syntheticContextFixture(),
+    });
+    hydra = createHttpServer(handler);
+    hydra.listen(0, "127.0.0.1");
+    await once(hydra, "listening");
+    const endpoint = `http://127.0.0.1:${hydra.address().port}/responses`;
+    const request = (input, extra = {}, sessionId = "stateful-session") => originalFetch(endpoint, {
+      method: "POST",
+      headers: { "content-type": "application/json", "session-id": sessionId },
+      body: JSON.stringify({ model: "hydra/stateful", input, stream: true, ...extra }),
+    });
+
+    let response = await request("first request");
+    assert.equal(response.status, 200);
+    await response.text();
+    const firstResponseId = "resp_gpt-a-upstream_1";
+
+    response = await request("select b if this were stateless", { previous_response_id: firstResponseId });
+    assert.equal(response.status, 200);
+    await response.text();
+
+    response = await request("still select b if this were stateless");
+    assert.equal(response.status, 200);
+    await response.text();
+
+    const unknown = await request("unknown state", { previous_response_id: "resp_unknown" }, "other-session");
+    assert.equal(unknown.status, 400);
+    assert.equal((await unknown.json()).error.code, "unsupported_state_reference");
+
+    assert.deepEqual(upstreamRequests.map((body) => body.model), [
+      "gpt-a-upstream",
+      "gpt-a-upstream",
+      "gpt-a-upstream",
+    ]);
+    assert.equal(upstreamRequests[1].previous_response_id, firstResponseId);
+  } finally {
+    if (hydra?.listening) {
+      hydra.close();
+      await Promise.allSettled([once(hydra, "close")]);
+    }
+    globalThis.fetch = originalFetch;
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("pins a synthetic session to a known OpenAI conversation owner", async () => {
+  const tempDir = await mkdtemp(join(tmpdir(), "hydra-synthetic-conversation-state-"));
+  const routesPath = join(tempDir, "routes.json");
+  const selectorPath = join(tempDir, "selector.js");
+  const selectorSource = `export default () => "gpt-b";\n`;
+  await writeFile(selectorPath, selectorSource);
+  await writeFile(routesPath, JSON.stringify({
+    "gpt-a": { provider: "openai", upstreamModel: "gpt-a-upstream", capabilities: {}, contextWindow: 100000 },
+    "gpt-b": { provider: "openai", upstreamModel: "gpt-b-upstream", capabilities: {}, contextWindow: 100000 },
+    "hydra/conversation-state": {
+      provider: "synthetic",
+      definition: {
+        slug: "hydra/conversation-state",
+        selectorPath,
+        selectorHash: createHash("sha256").update(selectorSource).digest("hex"),
+        candidates: ["gpt-a", "gpt-b"],
+        fallbackModel: "gpt-b",
+        effectiveCandidates: ["gpt-a", "gpt-b"],
+        routingScope: "user_turn",
+        stickyToolContinuations: false,
+        selectorTimeoutMs: 1000,
+        retryCount: 0,
+        retryDelayMs: 0,
+      },
+    },
+  }));
+  const originalFetch = globalThis.fetch;
+  const models = [];
+  globalThis.fetch = async (_url, options) => {
+    const body = JSON.parse(options.body);
+    models.push(body.model);
+    return new Response(JSON.stringify({ id: `resp_${models.length}`, status: "completed", output: [] }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  };
+  let hydra;
+  try {
+    const handler = createHydraHandler({
+      paths: { routesPath },
+      ollamaBaseUrl: "http://127.0.0.1:11434",
+      lmStudioBaseUrl: "http://127.0.0.1:11239",
+      openaiBaseUrl: "https://chatgpt.com/backend-api/codex",
+      syntheticContextOptions: syntheticContextFixture(),
+    });
+    hydra = createHttpServer(handler);
+    hydra.listen(0, "127.0.0.1");
+    await once(hydra, "listening");
+    const endpoint = `http://127.0.0.1:${hydra.address().port}/responses`;
+    let response = await originalFetch(endpoint, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "gpt-a", input: "seed", conversation: "conv_known", stream: false }),
+    });
+    assert.equal(response.status, 200);
+    await response.text();
+
+    response = await originalFetch(endpoint, {
+      method: "POST",
+      headers: { "content-type": "application/json", "session-id": "conversation-session" },
+      body: JSON.stringify({
+        model: "hydra/conversation-state",
+        input: "continue",
+        conversation: "conv_known",
+        stream: false,
+      }),
+    });
+    assert.equal(response.status, 200);
+    await response.text();
+    assert.deepEqual(models, ["gpt-a-upstream", "gpt-a-upstream"]);
   } finally {
     if (hydra?.listening) {
       hydra.close();

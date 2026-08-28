@@ -155,6 +155,8 @@ The context contains the raw decoded Responses request, separated system/develop
 
 `routing_scope = "user_turn"` evaluates the selector for each user turn. With `sticky_tool_continuations = true`, tool-result continuations reuse that turn's exact target and effective reasoning effort. `routing_scope = "conversation"` instead locks requests sharing a `session-id` to the first successful target. Locks are memory-only and clear on restart or refresh.
 
+Responses server state takes precedence over both routing scopes. Hydra records response and conversation ownership from successful OpenAI requests. When a synthetic request later supplies a known `previous_response_id` or `conversation`, Hydra pins that entire `session-id` to the state-owning OpenAI route; later requests in the session bypass selection even if they omit the state reference and send complete history. A pinned stateful session never falls back to another model. Unknown state references, state references without a `session-id`, and state references on local routes are rejected with `400` rather than risk routing state to the wrong upstream. Ownership records and stateful session pins are memory-only and clear on restart or refresh.
+
 Hydra validates target capability and actual context fit, retries only the selected target, and then uses the configured fallback for selector errors or failures before response output. It never chooses another candidate on its own. Once response bytes are emitted, Hydra never changes models.
 
 Synthetic model and selector edits can be applied with:
@@ -348,6 +350,8 @@ Client disconnects are logged as a distinct cancellation outcome rather than an 
 Codex Desktop currently sends Responses request bodies compressed with `content-encoding: zstd`. Hydra decodes compressed request bodies before parsing JSON.
 
 ## Current Scope
+
+`POST /responses` remains Hydra's incoming model endpoint. The portable contract is the stateless Responses subset: each request supplies the complete conversation history in `input`, following OpenAI's [manual conversation-state pattern](https://developers.openai.com/api/docs/guides/conversation-state#manually-manage-conversation-state). This works across direct cloud, local, and switchable synthetic routes. Direct OpenAI routes may transparently use upstream-managed state. Synthetic routes may continue known OpenAI state under the session-pinning rules above; they reject references whose owner Hydra cannot prove. Local routes reject `previous_response_id` and `conversation` because they cannot resolve OpenAI-managed state.
 
 Hydra supports the core text Responses flow for:
 

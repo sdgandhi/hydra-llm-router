@@ -71,6 +71,44 @@ function jsonResponse(req, res, status, body, debugAuth = false, extra = {}) {
   debugLogAccess({ enabled: debugAuth, req, status, ...extra });
 }
 
+function responsesStateReference(body) {
+  const previousResponseId = body?.previous_response_id;
+  const conversation = body?.conversation;
+  const conversationId = typeof conversation === "string" ? conversation : conversation?.id;
+  if (previousResponseId != null) return { field: "previous_response_id", id: previousResponseId };
+  if (conversation != null) return { field: "conversation", id: conversationId };
+  return null;
+}
+
+function stateReferenceError(message, field) {
+  return {
+    error: {
+      message,
+      type: "invalid_request_error",
+      code: "unsupported_state_reference",
+      param: field,
+    },
+  };
+}
+
+function responseMetadataCapture() {
+  let prefix = "";
+  let responseId;
+  let conversationId;
+  return {
+    push(chunk) {
+      if (responseId && conversationId) return;
+      prefix += Buffer.from(chunk).toString("utf8");
+      responseId ??= prefix.match(/"id"\s*:\s*"(resp_[^"]+)"/)?.[1];
+      conversationId ??= prefix.match(/"conversation"\s*:\s*\{[^}]*"id"\s*:\s*"([^"]+)"/)?.[1];
+      if (prefix.length > 65_536) prefix = prefix.slice(-4_096);
+    },
+    result() {
+      return { responseId, conversationId };
+    },
+  };
+}
+
 async function readBody(req) {
   const chunks = [];
   for await (const chunk of req) chunks.push(chunk);
@@ -1752,10 +1790,12 @@ async function forwardOpenAI({ req, body, openaiBaseUrl, apiKey, res, route, deb
   delete responseHeaders["content-length"];
   delete responseHeaders["transfer-encoding"];
   res.writeHead(upstream.status, responseHeaders);
+  const metadata = responseMetadataCapture();
   try {
     if (upstream.body) {
       for await (const chunk of upstream.body) {
         signal.throwIfAborted();
+        metadata.push(chunk);
         if (!res.write(chunk)) {
           await waitForDrain(res, signal);
         }
@@ -1776,6 +1816,7 @@ async function forwardOpenAI({ req, body, openaiBaseUrl, apiKey, res, route, deb
     route,
     upstream: { provider: "openai", url: url.toString(), status: upstream.status },
   });
+  return metadata.result();
 }
 
 function forwardedHeaders(sourceHeaders) {
@@ -1867,7 +1908,7 @@ async function dispatchDirectRoute({
   signal,
 }) {
   if (route.provider === "ollama") {
-    await callOllama({
+    return callOllama({
       req,
       body,
       route,
@@ -1878,10 +1919,9 @@ async function dispatchDirectRoute({
       webSearchCommands,
       signal,
     });
-    return;
   }
   if (route.provider === "lmstudio") {
-    await callLMStudio({
+    return callLMStudio({
       req,
       body,
       route,
@@ -1892,9 +1932,8 @@ async function dispatchDirectRoute({
       webSearchCommands,
       signal,
     });
-    return;
   }
-  await forwardOpenAI({ req, body, openaiBaseUrl, apiKey, res, route, debugAuth, signal });
+  return forwardOpenAI({ req, body, openaiBaseUrl, apiKey, res, route, debugAuth, signal });
 }
 
 function safeSyntheticError(error) {
@@ -2088,8 +2127,8 @@ async function runDirectAttempts({
       },
     });
     try {
-      await dispatchDirectRoute({ ...dispatchArgs, route, res: gate, signal });
-      if (gate.committed) return { targetSlug, route };
+      const metadata = await dispatchDirectRoute({ ...dispatchArgs, route, res: gate, signal });
+      if (gate.committed) return { targetSlug, route, metadata };
       const error = gate.failureError ?? new Error(`Upstream returned HTTP ${gate.statusCode}`);
       error.status = gate.statusCode;
       throw error;
@@ -2150,15 +2189,18 @@ async function handleSyntheticRequest({
   inspectOnly = false,
   syntheticContextOptions = {},
   onSyntheticSelection,
+  stateOwner,
 }) {
   const definition = syntheticRoute.definition;
   const sessionKey = syntheticSessionKey(req, definition);
   const requestedEffort = requestedReasoningEffort(body);
   const conversationLock = sessionKey ? state.conversations.get(sessionKey) : null;
+  const statefulLock = sessionKey ? state.statefulSessions.get(sessionKey) : null;
   const turnLock = sessionKey && isToolContinuationInput(body) && definition.stickyToolContinuations
     ? state.turns.get(sessionKey)
     : null;
-  const lock = definition.routingScope === "conversation" ? conversationLock : turnLock;
+  const lock = stateOwner ?? statefulLock ?? (definition.routingScope === "conversation" ? conversationLock : turnLock);
+  const statePinned = Boolean(stateOwner || statefulLock);
   let context;
   let selectedSlug;
   let effectiveEffort;
@@ -2169,10 +2211,20 @@ async function handleSyntheticRequest({
   if (lock) {
     context = { features: selectorFeatures(body) };
     try {
-      const selected = validateSelectorTarget({ definition, target: lock.targetSlug, context, routes });
-      selectedSlug = selected.slug;
-      effectiveEffort = lock.reasoningEffort;
+      if (statePinned) {
+        const pinnedRoute = routes[lock.targetSlug];
+        if (!pinnedRoute || pinnedRoute.provider !== "openai" || !definition.effectiveCandidates.includes(lock.targetSlug)) {
+          throw new Error(`State-owning route is no longer available to ${definition.slug}: ${lock.targetSlug}`);
+        }
+        selectedSlug = lock.targetSlug;
+        effectiveEffort = effectiveReasoningEffort(pinnedRoute, requestedEffort);
+      } else {
+        const selected = validateSelectorTarget({ definition, target: lock.targetSlug, context, routes });
+        selectedSlug = selected.slug;
+        effectiveEffort = lock.reasoningEffort;
+      }
     } catch (error) {
+      if (statePinned) throw error;
       selectionFallback = true;
       selectionError = error;
       const fallback = validateSelectorTarget({ definition, target: definition.fallbackModel, context, routes });
@@ -2257,6 +2309,8 @@ async function handleSyntheticRequest({
 
   if (inspectOnly) return { target: selectedSlug, fallback: selectionFallback, reasoningEffort: effectiveEffort };
 
+  if (statePinned && sessionKey) state.statefulSessions.set(sessionKey, { targetSlug: selectedSlug });
+
   const routedBody = bodyWithReasoningEffort(body, effectiveEffort);
   const dispatchArgs = {
     req,
@@ -2284,7 +2338,7 @@ async function handleSyntheticRequest({
         dispatchArgs,
       });
     } catch (error) {
-      if (error.hydraPostCommit || selectionFallback) throw error;
+      if (error.hydraPostCommit || selectionFallback || statePinned) throw error;
       const fallback = validateSelectorTarget({ definition, target: definition.fallbackModel, context, routes });
       const fallbackEffort = effectiveReasoningEffort(fallback.route, requestedEffort);
       dispatchArgs.body = bodyWithReasoningEffort(body, fallbackEffort);
@@ -2310,6 +2364,13 @@ async function handleSyntheticRequest({
     const locked = { targetSlug: ultimate.targetSlug, reasoningEffort: effectiveEffort };
     if (definition.routingScope === "conversation") state.conversations.set(sessionKey, locked);
     else if (definition.stickyToolContinuations) state.turns.set(sessionKey, locked);
+  }
+  if (ultimate.route.provider === "openai") {
+    const owner = { targetSlug: ultimate.targetSlug };
+    if (ultimate.metadata?.responseId) state.responseOwners.set(ultimate.metadata.responseId, owner);
+    const conversation = typeof body.conversation === "string" ? body.conversation : body.conversation?.id;
+    const conversationId = ultimate.metadata?.conversationId ?? conversation;
+    if (conversationId) state.upstreamConversations.set(conversationId, owner);
   }
   state.lastSelections.set(definition.slug, {
     selected: selectedSlug,
@@ -2373,10 +2434,16 @@ export function createHydraHandler({
   const syntheticState = {
     conversations: new Map(),
     turns: new Map(),
+    statefulSessions: new Map(),
+    responseOwners: new Map(),
+    upstreamConversations: new Map(),
     lastSelections: new Map(),
     clear() {
       this.conversations.clear();
       this.turns.clear();
+      this.statefulSessions.clear();
+      this.responseOwners.clear();
+      this.upstreamConversations.clear();
       this.lastSelections.clear();
     },
   };
@@ -2462,6 +2529,59 @@ export function createHydraHandler({
         return;
       }
 
+      const stateReference = isResponsesRequest ? responsesStateReference(body) : null;
+      if (stateReference && route.provider !== "openai" && route.provider !== "synthetic") {
+        jsonResponse(
+          req,
+          res,
+          400,
+          stateReferenceError(
+            `Hydra local routes support only stateless Responses requests. Remove ${stateReference.field} and send complete history in input.`,
+            stateReference.field,
+          ),
+          debugAuth,
+          { route },
+        );
+        return;
+      }
+
+      let stateOwner;
+      if (stateReference && route.provider === "synthetic") {
+        const sessionKey = syntheticSessionKey(req, route.definition);
+        stateOwner = stateReference.field === "previous_response_id"
+          ? syntheticState.responseOwners.get(stateReference.id)
+          : syntheticState.upstreamConversations.get(stateReference.id);
+        if (!sessionKey || !stateOwner) {
+          jsonResponse(
+            req,
+            res,
+            400,
+            stateReferenceError(
+              `Hydra cannot prove which upstream owns ${stateReference.field}=${JSON.stringify(stateReference.id)}. Resume through the original direct OpenAI route, or send complete history in input without server state.`,
+              stateReference.field,
+            ),
+            debugAuth,
+            { route },
+          );
+          return;
+        }
+        const existingOwner = syntheticState.statefulSessions.get(sessionKey);
+        if (existingOwner && existingOwner.targetSlug !== stateOwner.targetSlug) {
+          jsonResponse(
+            req,
+            res,
+            400,
+            stateReferenceError(
+              `The Codex session is pinned to ${existingOwner.targetSlug}, but ${stateReference.field} belongs to ${stateOwner.targetSlug}.`,
+              stateReference.field,
+            ),
+            debugAuth,
+            { route },
+          );
+          return;
+        }
+      }
+
       if (isRouteInspection) {
         if (route.provider !== "synthetic") {
           jsonResponse(req, res, 400, { error: { message: "Route inspection requires a synthetic model" } }, debugAuth);
@@ -2509,10 +2629,11 @@ export function createHydraHandler({
           syntheticContextOptions,
           source: requestSource(req),
           onSyntheticSelection,
+          stateOwner,
         });
         return;
       }
-      await dispatchDirectRoute({
+      const metadata = await dispatchDirectRoute({
         req,
         body,
         route,
@@ -2526,6 +2647,13 @@ export function createHydraHandler({
         webSearchCommands,
         signal: cancellation.signal,
       });
+      if (route.provider === "openai") {
+        const owner = { targetSlug: body.model };
+        if (metadata?.responseId) syntheticState.responseOwners.set(metadata.responseId, owner);
+        const conversation = typeof body.conversation === "string" ? body.conversation : body.conversation?.id;
+        const conversationId = metadata?.conversationId ?? conversation;
+        if (conversationId) syntheticState.upstreamConversations.set(conversationId, owner);
+      }
     } catch (error) {
       if (cancellation?.stage) {
         debugLogCancellation({ enabled: debugAuth, req, route, stage: cancellation.stage });
