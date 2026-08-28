@@ -1819,10 +1819,10 @@ function bodyWithReasoningEffort(body, effort) {
   return copy;
 }
 
-function hasToolResultInput(body) {
-  return Array.isArray(body?.input) && body.input.some(
-    (item) => item?.type === "function_call_output" || item?.type === "custom_tool_call_output",
-  );
+function isToolContinuationInput(body) {
+  if (!Array.isArray(body?.input) || body.input.length === 0) return false;
+  const latest = body.input.at(-1);
+  return latest?.type === "function_call_output" || latest?.type === "custom_tool_call_output";
 }
 
 function syntheticSessionKey(req, definition) {
@@ -1898,7 +1898,12 @@ async function dispatchDirectRoute({
 }
 
 function safeSyntheticError(error) {
-  return { name: error?.name ?? "Error", code: error?.code, stage: error?.hydraStage };
+  return {
+    name: error?.name ?? "Error",
+    code: error?.code,
+    status: error?.status,
+    stage: error?.hydraStage,
+  };
 }
 
 function responseOutputText(data) {
@@ -1907,6 +1912,30 @@ function responseOutputText(data) {
     .flatMap((item) => (Array.isArray(item?.content) ? item.content : []))
     .map((part) => part?.text ?? part?.output_text ?? "")
     .join("");
+}
+
+function responseStreamOutputText(text) {
+  const deltas = [];
+  let completedText;
+  for (const line of text.split(/\r?\n/)) {
+    if (!line.startsWith("data:")) continue;
+    const payload = line.slice(5).trim();
+    if (!payload || payload === "[DONE]") continue;
+    let event;
+    try {
+      event = JSON.parse(payload);
+    } catch {
+      continue;
+    }
+    if (event?.type === "response.output_text.delta" && typeof event.delta === "string") {
+      deltas.push(event.delta);
+    } else if (event?.type === "response.output_text.done" && typeof event.text === "string") {
+      completedText = event.text;
+    } else if (event?.type === "response.completed") {
+      completedText ??= responseOutputText(event.response);
+    }
+  }
+  return completedText || deltas.join("");
 }
 
 async function callSelectorModel({
@@ -1962,10 +1991,15 @@ async function callSelectorModel({
     url = upstreamResponsesUrl("/responses", openaiBaseUrl);
     headers = forwardedHeaders(req.headers);
     headers["content-type"] = "application/json";
-    headers.accept = "application/json";
+    headers.accept = "text/event-stream";
     if (apiKey) headers.authorization = `Bearer ${apiKey}`;
     else if (req.headers.authorization) headers.authorization = req.headers.authorization;
-    upstreamBody = { model: route.upstreamModel, input: prompt, stream: false, store: false };
+    upstreamBody = {
+      model: route.upstreamModel,
+      input: [{ role: "user", content: prompt }],
+      stream: true,
+      store: false,
+    };
   }
 
   const requestText = JSON.stringify(upstreamBody);
@@ -1983,25 +2017,28 @@ async function callSelectorModel({
   });
   const response = await fetch(url, { method: "POST", headers, body: requestText, signal });
   signal.throwIfAborted();
-  let data;
-  try {
-    data = await response.json();
-  } catch {
-    const error = new Error("Selector model returned an invalid response");
-    error.code = "HYDRA_SELECTOR_MODEL_RESPONSE";
-    throw error;
-  }
+  const responseText = await response.text();
   if (!response.ok) {
     const error = new Error("Selector model request failed");
     error.code = "HYDRA_SELECTOR_MODEL_UPSTREAM";
     error.status = response.status;
     throw error;
   }
+  let data;
+  if (route.provider !== "openai") {
+    try {
+      data = JSON.parse(responseText);
+    } catch {
+      const error = new Error("Selector model returned an invalid response");
+      error.code = "HYDRA_SELECTOR_MODEL_RESPONSE";
+      throw error;
+    }
+  }
   const output = route.provider === "ollama"
     ? data?.message?.content
     : route.provider === "lmstudio"
       ? lmStudioMessageText(data?.choices?.[0]?.message?.content)
-      : responseOutputText(data);
+      : responseStreamOutputText(responseText);
   if (typeof output !== "string" || !output.trim()) {
     const error = new Error("Selector model returned no output");
     error.code = "HYDRA_SELECTOR_MODEL_OUTPUT";
@@ -2118,7 +2155,7 @@ async function handleSyntheticRequest({
   const sessionKey = syntheticSessionKey(req, definition);
   const requestedEffort = requestedReasoningEffort(body);
   const conversationLock = sessionKey ? state.conversations.get(sessionKey) : null;
-  const turnLock = sessionKey && hasToolResultInput(body) && definition.stickyToolContinuations
+  const turnLock = sessionKey && isToolContinuationInput(body) && definition.stickyToolContinuations
     ? state.turns.get(sessionKey)
     : null;
   const lock = definition.routingScope === "conversation" ? conversationLock : turnLock;

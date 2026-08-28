@@ -1,6 +1,39 @@
 # Agent Notes for Hydra
 
-This project is a local Codex Desktop model router. Keep changes small and validate against the live Desktop behavior when touching config or auth paths.
+This project is a local Codex Desktop model router. Keep changes small. Development and automated live verification must use the isolated Codex CLI environment described below; do not interrupt the Desktop router to test development code.
+
+## Isolated Development Environment
+
+- Never use Codex Desktop to develop or test Hydra. Never stop, replace, or bind to the Desktop Hydra listener on port `3847` during development.
+- Never use the Codex binary bundled inside ChatGPT.app or Codex.app for development. Use the repository-pinned `@openai/codex` dev dependency through the npm commands below.
+- All development Codex state lives under `HYDRA_DEV_CODEX_HOME`, which defaults to `~/.codex-hydra-dev`. `CODEX_HOME` and `CODEX_SQLITE_HOME` are both set by the wrapper, so development config, auth, logs, rollouts, history, sessions, skills, and SQLite state do not enter `~/.codex` or appear in Codex Desktop.
+- Development Hydra listens on `HYDRA_DEV_PORT`, which defaults to `3857`. The wrapper rejects port `3847`.
+- Development Codex uses the built-in OpenAI provider identity with top-level `model_catalog_json` and `openai_base_url` pinned to the development Hydra listener. The wrapper removes direct API-key, access-token, workload-identity, and base-URL overrides from child environments and rejects CLI flags that could bypass its config.
+- Direct ChatGPT access is allowed only for `npm run dev:login`, so the isolated CLI can obtain and refresh OAuth credentials. API-key and access-token login modes are rejected. All model inference must go through development Hydra.
+- `npm run dev:setup` rewrites the isolated, wrapper-owned Codex config and imports only the current model cache and Hydra configuration/selectors as initial development fixtures. It does not copy Desktop auth, session rollouts, history, logs, or SQLite databases. Run `npm run dev:login` once to authenticate the isolated home independently.
+- Do not run `node src/cli.js install`, `serve`, `stop`, `prompt`, or `session` against the default `~/.codex` paths while developing. Use the `dev:*` commands.
+
+Initial setup:
+
+```sh
+npm install
+npm run dev:setup
+npm run dev:login
+```
+
+Normal development and live testing:
+
+```sh
+npm run dev:serve
+npm run dev:codex -- exec --ephemeral --sandbox read-only "<prompt>"
+npm run dev:route -- --model <slug> --input "<prompt>"
+npm run dev:prompt -- --model <slug> --input "<prompt>"
+npm run dev:session -- --model <slug> --input "<turn-1>" --input "<turn-2>"
+npm run dev:verify-routing
+npm run dev:stop
+```
+
+Use `HYDRA_DEV_CODEX_HOME` and `HYDRA_DEV_PORT` only when a test needs another isolated home or listener. Keep the Desktop defaults untouched.
 
 ## Working Architecture
 
@@ -53,22 +86,20 @@ This project is a local Codex Desktop model router. Keep changes small and valid
 Run:
 
 ```sh
-npm test
-node --check src/router.js
-node --check src/cli.js
-node --check src/debug.js
+npm run test:check
 ```
 
 For live CLI verification:
 
-1. `node src/cli.js install`
-2. `node src/cli.js serve --debug`
-3. Use `node src/cli.js prompt --model <slug> --input <text>` for cloud, Ollama, and LM Studio smoke tests.
-4. Use repeated `--input` values with `node src/cli.js session` for full multi-turn verification.
-5. Use `node src/cli.js route --model hydra/money-saver --input <text>` to exercise selection without generation.
-6. Confirm `~/.codex/hydra/hydra.log` shows upstream `status: 200` and the expected provider endpoint.
-7. If app tools are enabled, select a tool-capable local model and verify an app-server tool call; verify `--app-tools off` disables the bridge.
-8. Restart without debug logging for normal use.
+1. Complete the isolated setup above once.
+2. Start development Hydra with `npm run dev:serve`.
+3. Use `npm run dev:route -- --model <slug> --input <text>` to exercise a selector without full Codex agent context or a generated answer.
+4. Use `npm run dev:prompt -- --model <slug> --input <text>` for cloud, Ollama, and LM Studio smoke tests.
+5. Use repeated `--input` values with `npm run dev:session -- --model <slug> --input <text>` for full multi-turn verification.
+6. Use `npm run dev:verify-routing` to submit simple, medium, and complex requests through the isolated Codex CLI and assert the configured three-way synthetic selection. It stops each ephemeral CLI request after Hydra records the decision so the test stays fast; use `dev:prompt` when the generated response also matters.
+7. Confirm `~/.codex-hydra-dev/hydra/hydra.log` shows upstream `status: 200` and the expected provider endpoint.
+8. If app tools are enabled, select a tool-capable local model and verify an app-server tool call; verify `--app-tools off` disables the bridge.
+9. Stop only the development listener with `npm run dev:stop`. Do not stop the Desktop listener.
 
 ## Change Delivery
 

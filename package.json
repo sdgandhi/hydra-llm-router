@@ -7,9 +7,19 @@
     "hydra": "./src/cli.js"
   },
   "scripts": {
+    "dev:setup": "node scripts/dev-codex.js setup",
+    "dev:login": "node scripts/dev-codex.js login",
+    "dev:serve": "node scripts/dev-codex.js serve",
+    "dev:stop": "node scripts/dev-codex.js stop",
+    "dev:codex": "node scripts/dev-codex.js codex",
+    "dev:route": "node scripts/dev-codex.js route",
+    "dev:prompt": "node scripts/dev-codex.js prompt",
+    "dev:session": "node scripts/dev-codex.js session",
+    "dev:verify-routing": "node scripts/dev-codex.js verify-routing",
     "dmg:dev": "node scripts/build-macos.js --dev",
     "dmg:release": "node scripts/build-macos.js --release",
     "test": "node --test",
+    "test:check": "npm test && node --check src/router.js && node --check src/cli.js && node --check src/debug.js && node --check scripts/dev-codex.js",
     "start": "node src/cli.js serve"
   },
   "engines": {
@@ -17,5 +27,8 @@
   },
   "dependencies": {
     "smol-toml": "^1.8.0"
+  },
+  "devDependencies": {
+    "@openai/codex": "0.150.1"
   }
 }
