@@ -32,7 +32,7 @@ import { ensureHydraConfig, loadHydraSettings } from "./hydra-config.js";
 import { hydraVersion } from "./version.js";
 
 const commands = new Set(["serve", "stop", "refresh", "install", "restore", "status", "models", "route", "prompt", "session"]);
-const booleanOptions = new Set(["--debug", "--no-debug", "--menubar", "--no-menubar", "--json"]);
+const booleanOptions = new Set(["--debug", "--menubar", "--no-menubar", "--json"]);
 const repeatableOptions = new Set(["--input", "--file", "--image", "--web-search-command"]);
 
 function usage() {
@@ -72,8 +72,7 @@ Options:
   --reasoning <effort>     Requested reasoning effort
   --session-id <id>        Resume an existing Codex CLI session
   --json                   Preserve Codex CLI JSONL output for prompt
-  --debug                  Log redacted request and synthetic routing diagnostics
-  --no-debug               Disable debug logging configured in TOML
+  --debug                  Log redacted request and synthetic routing diagnostics (always enabled)
   --menubar                Show the macOS menu bar item
   --no-menubar             Do not show the macOS menu bar item while serving
 `;
@@ -144,7 +143,6 @@ export async function buildConfig(options = {}) {
     dataDir: saved.dataDir,
   });
   if (!options.config || ensured.created) await ensureSyntheticDefaults(paths);
-  const debugAuth = options.debug ? true : options.no_debug ? false : saved.debug;
   const menubar = options.menubar ? true : options.no_menubar ? false : saved.menubar;
   const appTools = options.app_tools ?? saved.appTools;
   if (!new Set(["auto", "off"]).has(appTools)) throw new Error("--app-tools must be auto or off");
@@ -177,7 +175,7 @@ export async function buildConfig(options = {}) {
     appToolServers: parseAppToolServers(options.app_tool_servers ?? saved.appToolServers),
     codexBin: options.codex_bin ?? saved.codexBin,
     webSearchCommands: commandOptions(options.web_search_command, saved.webSearchCommands),
-    debugAuth,
+    debugAuth: true,
     noMenuBar: !menubar,
   };
 }

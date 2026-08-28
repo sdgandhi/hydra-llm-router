@@ -1,6 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { sanitizeHeaders, summarizeBody } from "../src/debug.js";
+import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { configureDebugLog, sanitizeHeaders, summarizeBody, writeDebugLine } from "../src/debug.js";
 
 test("redacts sensitive auth headers while preserving diagnostic header names", () => {
   const headers = sanitizeHeaders({
@@ -43,4 +46,21 @@ test("summarizes request body without retaining prompt content", () => {
     toolTypes: ["function"],
     keys: ["input", "model", "stream", "tools"],
   });
+});
+
+test("caps the debug log at the configured byte limit", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "hydra-debug-log-"));
+  const logPath = path.join(root, "hydra.log");
+  try {
+    configureDebugLog(logPath, { maxBytes: 1_000 });
+    writeDebugLine("first", { value: "a".repeat(700) });
+    writeDebugLine("second", { value: "b".repeat(700) });
+
+    assert.ok((await stat(logPath)).size <= 1_000);
+    assert.doesNotMatch(await readFile(logPath, "utf8"), /\[first\]/);
+    assert.match(await readFile(logPath, "utf8"), /\[second\]/);
+  } finally {
+    configureDebugLog(null);
+    await rm(root, { recursive: true, force: true });
+  }
 });

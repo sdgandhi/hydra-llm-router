@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { access, readFile } from "node:fs/promises";
-import { artifactName, nextPatchVersion } from "../scripts/build-macos.js";
+import { artifactName, infoPlist, nextPatchVersion } from "../scripts/build-macos.js";
 
 test("macOS builds use patch versions and distinguish development artifacts", () => {
   assert.equal(nextPatchVersion("0.1.0"), "0.1.1");
@@ -19,6 +19,7 @@ test("the native macOS launcher replaces the Finder command file", async () => {
   assert.match(buildSource, /vendor\/ddgr/);
   assert.match(buildSource, /DDGR_SHA256/);
   assert.match(buildSource, /HydraDebugLogging/);
+  assert.match(infoPlist("0.1.0"), /<key>HydraDebugLogging<\/key><true\/>/);
   assert.match(menuSource, /NSOpenPanel/);
   assert.match(menuSource, /withApplicationAt/);
   await assert.rejects(access(new URL("../Hydra.command", import.meta.url)));

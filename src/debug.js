@@ -1,4 +1,6 @@
-import { appendFileSync } from "node:fs";
+import { appendFileSync, statSync, writeFileSync } from "node:fs";
+
+export const MAX_LOG_BYTES = 100 * 1024 * 1024;
 
 const SENSITIVE_HEADER_RE =
   /authorization|cookie|token|key|secret|session|csrf|jwt|credential|account|x-codex-(?:turn-metadata|window-id)/i;
@@ -130,14 +132,32 @@ export function debugLogSynthetic({ enabled, event, payload }) {
   });
 }
 
-export function configureDebugLog(filePath) {
+export function configureDebugLog(filePath, { maxBytes = MAX_LOG_BYTES } = {}) {
   globalThis.__HYDRA_DEBUG_LOG_PATH = filePath;
+  globalThis.__HYDRA_DEBUG_LOG_MAX_BYTES = maxBytes;
 }
 
 export function writeDebugLine(label, payload) {
   const line = `[${label}] ${JSON.stringify(payload)}\n`;
   if (globalThis.__HYDRA_DEBUG_LOG_PATH) {
-    appendFileSync(globalThis.__HYDRA_DEBUG_LOG_PATH, line, "utf8");
+    try {
+      const bytes = Buffer.from(line, "utf8");
+      const maxBytes = globalThis.__HYDRA_DEBUG_LOG_MAX_BYTES ?? MAX_LOG_BYTES;
+      const output = bytes.length > maxBytes ? bytes.subarray(bytes.length - maxBytes) : bytes;
+      let size = 0;
+      try {
+        size = statSync(globalThis.__HYDRA_DEBUG_LOG_PATH).size;
+      } catch {
+        // The first append creates the log.
+      }
+      if (size + output.length > maxBytes) {
+        writeFileSync(globalThis.__HYDRA_DEBUG_LOG_PATH, output);
+      } else {
+        appendFileSync(globalThis.__HYDRA_DEBUG_LOG_PATH, output);
+      }
+    } catch {
+      // Logging must never crash the router.
+    }
     return;
   }
   try {

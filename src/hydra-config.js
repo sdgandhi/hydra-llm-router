@@ -9,7 +9,7 @@ const BUNDLED_DDGR_PATH = fileURLToPath(new URL("../vendor/ddgr/ddgr", import.me
 
 export const HYDRA_CONFIG_DEFAULTS = Object.freeze({
   port: 3847,
-  debug: false,
+  debug: true,
   menubar: true,
   codexHome: "~/.codex",
   codexBin: "codex",

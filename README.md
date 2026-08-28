@@ -38,7 +38,7 @@ Hydra is distributed as a signed macOS DMG. Open the DMG, drag `Hydra.app` to Ap
 
 Hydra creates its bundled Money Saver synthetic model on first launch without modifying Codex. Use `Install Hydra in Codex` to back up the current Codex configuration, refresh the model catalog, and route Codex through Hydra. Use `Restore Codex Config` to restore that backup without quitting. `Open Hydra Config` asks which installed application should open the file. `Quit Hydra & Restore Codex` restores the backup and stops the router.
 
-Development builds bundle the current Node runtime, use the current package version without changing it, enable redacted debug logging, and are ad-hoc signed:
+Development builds bundle the current Node runtime, use the current package version without changing it, and are ad-hoc signed. Redacted debug logging is enabled in both development and release builds:
 
 ```sh
 npm ci
@@ -76,13 +76,6 @@ node src/cli.js serve --no-menubar
 ```
 
 The menu bar and `models` command both show the detected catalog entries Hydra has written. Install, restore, refresh, and config actions appear directly below the Codex routing status. The nested `Synthetic Models` view shows each model's selector, candidates, fallback, routing scope, retry settings, and last in-memory target. Click a selector row to reveal its module in Finder. Its `Refresh` action reloads synthetic definitions and the catalog and clears routing locks; `Open Hydra Config` opens the unified TOML file. Local providers are queried during `refresh` or `install`; a provider that is offline or advertises no chat models contributes no direct catalog entries.
-
-After testing with debug mode, restart without debug logging:
-
-```sh
-node src/cli.js stop
-node src/cli.js serve
-```
 
 ## Model Routing
 
@@ -270,7 +263,7 @@ All persistent runtime configuration lives in `~/.hydra/config.toml`:
 ```toml
 [hydra]
 port = 3847
-debug = false
+debug = true
 menubar = true
 data_dir = "."
 
@@ -332,14 +325,15 @@ Key files:
 - `selectors/`: installed selector modules, including Money Saver
 - `config.backup.toml`: saved Codex config for restore
 - `hydra.pid`: running server pid
-- `hydra.log`: the single debug log when `--debug` is enabled
+- `hydra.log`: the always-on debug log, capped at 100 MB
+- `launcher.log`: bundled app output, capped at 100 MB
 
 ## Debugging
 
-Run with redacted request diagnostics:
+Redacted request diagnostics are always enabled. Start the router normally:
 
 ```sh
-node src/cli.js serve --debug
+node src/cli.js serve
 ```
 
 Stop it from another terminal:

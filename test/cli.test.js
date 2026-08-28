@@ -90,6 +90,7 @@ web_search_commands = [["search"]]
     assert.equal(config.ollamaBaseUrl, "http://flag-ollama");
     assert.equal(config.openaiBaseUrl, "https://config.example/v1");
     assert.equal(config.lmStudioBaseUrl, "http://config-lmstudio");
+    assert.equal(config.debugAuth, true);
     assert.equal(config.noMenuBar, true);
     assert.equal(config.paths.hydraDir, root);
   } finally {

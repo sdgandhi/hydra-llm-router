@@ -55,7 +55,7 @@ function bumpVersion() {
   return version;
 }
 
-function infoPlist(version, debug) {
+export function infoPlist(version) {
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -70,7 +70,7 @@ function infoPlist(version, debug) {
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>${version}</string>
   <key>CFBundleVersion</key><string>${version}</string>
-  <key>HydraDebugLogging</key><${debug ? "true" : "false"}/>
+  <key>HydraDebugLogging</key><true/>
   <key>LSMinimumSystemVersion</key><string>13.0</string>
   <key>LSUIElement</key><true/>
 </dict>
@@ -146,7 +146,7 @@ export function buildMacDmg({ release = false } = {}) {
   mkdirSync(path.join(bundledAppDir, "node_modules"), { recursive: true });
   cpSync(dependencyDir, path.join(bundledAppDir, "node_modules/smol-toml"), { recursive: true });
   cpSync(path.join(dependencyDir, "LICENSE"), path.join(licensesDir, "smol-toml-LICENSE"));
-  writeFileSync(path.join(contentsDir, "Info.plist"), infoPlist(version, !release));
+  writeFileSync(path.join(contentsDir, "Info.plist"), infoPlist(version));
   createIcon(path.join(repoDir, "src/hydra-menubar.png"), path.join(resourcesDir, "Hydra.icns"));
 
   sign(path.join(binDir, "node"), { identity, release: distributionSigning, entitlements });
