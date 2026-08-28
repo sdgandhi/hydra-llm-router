@@ -6,7 +6,7 @@ This project is a local Codex Desktop model router. Keep changes small. Developm
 
 - Never use Codex Desktop to develop or test Hydra. Never stop, replace, or bind to the Desktop Hydra listener on port `3847` during development.
 - Never use the Codex binary bundled inside ChatGPT.app or Codex.app for development. Use the repository-pinned `@openai/codex` dev dependency through the npm commands below.
-- All development Codex state lives under `HYDRA_DEV_CODEX_HOME`, which defaults to `~/.codex-hydra-dev`. `CODEX_HOME` and `CODEX_SQLITE_HOME` are both set by the wrapper, so development config, auth, logs, rollouts, history, sessions, skills, and SQLite state do not enter `~/.codex` or appear in Codex Desktop.
+- All development Codex state lives under `HYDRA_DEV_CODEX_HOME`, which defaults to `~/.codex-hydra-dev`, while development Hydra state lives under `HYDRA_DEV_HOME`, which defaults to `~/.hydra-dev`. `CODEX_HOME` and `CODEX_SQLITE_HOME` are both set by the wrapper, so development auth, rollouts, history, logs, sessions, skills, and SQLite state do not enter `~/.codex` or appear in Codex Desktop.
 - Development Hydra listens on `HYDRA_DEV_PORT`, which defaults to `3857`. The wrapper rejects port `3847`.
 - Development Codex uses the built-in OpenAI provider identity with top-level `model_catalog_json` and `openai_base_url` pinned to the development Hydra listener. The wrapper removes direct API-key, access-token, workload-identity, and base-URL overrides from child environments and rejects CLI flags that could bypass its config.
 - Direct ChatGPT access is allowed only for `npm run dev:login`, so the isolated CLI can obtain and refresh OAuth credentials. API-key and access-token login modes are rejected. All model inference must go through development Hydra.
@@ -32,7 +32,7 @@ npm run dev:session -- --model <slug> --input "<turn-1>" --input "<turn-2>"
 npm run dev:stop
 ```
 
-Use `HYDRA_DEV_CODEX_HOME` and `HYDRA_DEV_PORT` only when a test needs another isolated home or listener. Keep the Desktop defaults untouched.
+Use `HYDRA_DEV_CODEX_HOME`, `HYDRA_DEV_HOME`, and `HYDRA_DEV_PORT` only when a test needs another isolated home or listener. Keep the Desktop defaults untouched.
 Use `scripts/dev-codex` directly when another development tool needs a Codex CLI binary path; it transparently forwards all Codex arguments inside the isolated home.
 
 ## Working Architecture
@@ -44,7 +44,7 @@ Use `scripts/dev-codex` directly when another development tool needs a Codex CLI
 - Local Ollama model routes use provider `ollama` and slugs prefixed with `ollama/`.
 - Local LM Studio model routes use provider `lmstudio` and slugs prefixed with `lmstudio/`.
 - Local OMLX model routes use provider `omlx` and slugs prefixed with `omlx/`.
-- Keep local prefixes collision-free; route slugs are the source of truth in `~/.codex/hydra/routes.json`.
+- Keep local prefixes collision-free; route slugs are the source of truth in `~/.hydra/routes.json`.
 
 ## Important Desktop Behaviors
 
@@ -76,11 +76,11 @@ Use `scripts/dev-codex` directly when another development tool needs a Codex CLI
 ## Debugging Notes
 
 - Use `node src/cli.js serve --debug` for live Desktop or CLI captures.
-- Logs go to `~/.codex/hydra/hydra.log`.
+- Logs go to `~/.hydra/hydra.log`.
 - Do not log prompt text or raw bodies. Keep the current summarized body logging style.
 - Sensitive headers should stay redacted.
 - Debug logging must not depend on stderr being open. The Desktop/agent terminal pipe can close and cause `EPIPE`.
-- If the server appears stopped, check both `~/.codex/hydra/hydra.pid` and the actual listener with `lsof -nP -iTCP:3847 -sTCP:LISTEN`; stale pid files can happen after interrupted tests.
+- If the server appears stopped, check both `~/.hydra/hydra.pid` and the actual listener with `lsof -nP -iTCP:3847 -sTCP:LISTEN`; stale pid files can happen after interrupted tests.
 - Never log prompt text, raw request bodies, or local model output; keep request logging summarized by route, shape, sizes, and capability/tool counts.
 
 ## Verification
@@ -98,7 +98,7 @@ For live CLI verification:
 3. Use `npm run dev:route -- --model <slug> --input <text>` to exercise a selector without full Codex agent context or a generated answer.
 4. Use `npm run dev:prompt -- --model <slug> --input <text>` for cloud, Ollama, LM Studio, and OMLX smoke tests.
 5. Use repeated `--input` values with `npm run dev:session -- --model <slug> --input <text>` for full multi-turn verification.
-6. Confirm `~/.codex-hydra-dev/hydra/hydra.log` shows upstream `status: 200` and the expected provider endpoint.
+6. Confirm `~/.hydra-dev/hydra.log` shows upstream `status: 200` and the expected provider endpoint.
 7. If app tools are enabled, select a tool-capable local model and verify an app-server tool call; verify `--app-tools off` disables the bridge.
 8. Stop only the development listener with `npm run dev:stop`. Do not stop the Desktop listener.
 
@@ -111,6 +111,6 @@ For live CLI verification:
 
 - Never overwrite unrelated user edits in `~/.codex/config.toml`.
 - Preserve the backup/restore behavior.
-- Keep generated files under `~/.codex/hydra/`.
+- Keep generated files under `~/.hydra/`.
 - Avoid adding heavy dependencies unless they solve a real Desktop compatibility issue.
 - Preserve support for `Hydra.command` finding both ChatGPT.app and Codex.app bundled CLIs, as well as `HYDRA_CODEX_BIN` overrides.

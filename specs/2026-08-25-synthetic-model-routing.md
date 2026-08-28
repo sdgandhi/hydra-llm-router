@@ -120,7 +120,7 @@ flowchart TD
 This feature uses exactly one Hydra-owned configuration file:
 
 ```text
-~/.codex/hydra/config.toml
+~/.hydra/config.toml
 ```
 
 This is distinct from Codex's `~/.codex/config.toml`. Hydra must not load a directory of TOML fragments, clone portable configurations, or merge project-local synthetic definitions.
@@ -155,7 +155,7 @@ Fields:
 | TOML table key | Yes | Unprefixed model name. Hydra exposes it with exactly one `hydra/` prefix. |
 | `display_name` | No | Catalog label. Defaults to `Hydra: <table key>`. |
 | `description` | No | Catalog description. |
-| `selector` | Yes | JavaScript module path, resolved relative to `~/.codex/hydra/config.toml`. |
+| `selector` | Yes | JavaScript module path, resolved relative to `~/.hydra/config.toml`. |
 | `candidates` | Yes | Allowlisted direct model slugs the selector may return. May omit the fallback. |
 | `fallback_model` | Yes | Concrete direct model used after selector or selected-model failure. Implicitly allowlisted. |
 | `routing_scope` | Yes | `user_turn` or `conversation`. |
@@ -197,7 +197,7 @@ A currently unavailable candidate does not invalidate the definition. The synthe
 
 ### Installation
 
-`hydra install` automatically installs the Money Saver definition and its JavaScript module under `~/.codex/hydra/`.
+`hydra install` automatically installs the Money Saver definition and its JavaScript module under `~/.hydra/`.
 
 - A new installation creates `config.toml` and `selectors/money-saver.js`.
 - Existing user configuration and selector files must not be overwritten.
@@ -628,7 +628,7 @@ The canonical flag becomes:
 It replaces the user-facing `--debug-auth` name. Debug output continues to use the single file:
 
 ```text
-~/.codex/hydra/hydra.log
+~/.hydra/hydra.log
 ```
 
 Synthetic routing events are written whenever `--debug` is enabled. They are not written during normal non-debug operation. Log rotation is deferred.
@@ -698,7 +698,7 @@ Save remains disabled until required fields and numeric values are valid. On Sav
 The general menu provides these actions immediately below **Codex routing**:
 
 - **Refresh**: runs the equivalent of `hydra refresh`, updates the catalog/config snapshot, clears routing locks and last-selection state, and refreshes the displayed menu state.
-- **Open Config**: opens `~/.codex/hydra/config.toml` in the system-associated editor.
+- **Open Config**: opens `~/.hydra/config.toml` in the system-associated editor.
 - **Install Hydra in Codex** and **Restore Codex Config** retain their existing behavior.
 
 Last selection is memory-only and resets on restart or refresh. Models omitted because their selector file is missing do not appear as usable synthetic models; the debug log records why they were omitted.
@@ -766,7 +766,7 @@ The generated route table may represent a synthetic entry as conceptually equiva
 
 The exact generated schema is an implementation detail, but it must contain enough validated, immutable information for `serve` to route without reparsing TOML per request. Selector/config updates are promoted into this runtime snapshot only by successful refresh or restart.
 
-All generated files remain under `~/.codex/hydra/`. Existing Codex backup and restore behavior is unchanged.
+All generated files remain under `~/.hydra/`. Existing Codex backup and restore behavior is unchanged.
 
 ## Verification plan
 
@@ -847,7 +847,7 @@ The implementation was verified without relying on Codex Desktop UI state:
 
 The feature is complete when:
 
-1. A user can define valid global synthetic models in `~/.codex/hydra/config.toml` using JavaScript selector paths.
+1. A user can define valid global synthetic models in `~/.hydra/config.toml` using JavaScript selector paths.
 2. Valid definitions appear as `hydra/...` entries without altering Codex's built-in provider identity.
 3. Selector output is restricted to one direct effective-candidate slug.
 4. Nested synthetic routing is rejected.

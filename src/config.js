@@ -13,7 +13,7 @@ export function expandHome(value) {
 
 export function defaultPaths({ codexHome = "~/.codex", configPath = null, dataDir = null } = {}) {
   const home = path.resolve(expandHome(codexHome));
-  const hydraConfigPath = path.resolve(expandHome(configPath ?? path.join(home, "hydra", "config.toml")));
+  const hydraConfigPath = path.resolve(expandHome(configPath ?? "~/.hydra/config.toml"));
   const configDir = path.dirname(hydraConfigPath);
   const hydraDir = path.resolve(expandHome(dataDir ?? configDir));
   return {

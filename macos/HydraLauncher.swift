@@ -20,7 +20,7 @@ let nodeURL = resourcesURL.appendingPathComponent("bin/node")
 let menuBarURL = resourcesURL.appendingPathComponent("bin/HydraMenuBar")
 let cliURL = appURL.appendingPathComponent("src/cli.js")
 let hydraURL = fileManager.homeDirectoryForCurrentUser
-  .appendingPathComponent(".codex/hydra", isDirectory: true)
+  .appendingPathComponent(".hydra", isDirectory: true)
 
 do {
   try fileManager.createDirectory(at: hydraURL, withIntermediateDirectories: true)

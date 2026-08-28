@@ -1,14 +1,22 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import {
+  defaultPaths,
   hydraConfigPatch,
   insertHydraConfig,
   isHydraInstalled,
   removeManagedHydraConfig,
 } from "../src/config.js";
+
+test("stores default Hydra state independently of Codex home", () => {
+  const paths = defaultPaths({ codexHome: "/tmp/custom-codex-home" });
+  assert.equal(paths.codexHome, "/tmp/custom-codex-home");
+  assert.equal(paths.hydraDir, path.join(homedir(), ".hydra"));
+  assert.equal(paths.hydraConfigPath, path.join(homedir(), ".hydra", "config.toml"));
+});
 
 test("removes managed hydra provider config without disturbing other sections", () => {
   const input = `model = "gpt-5.5"

@@ -28,7 +28,7 @@ node src/cli.js prompt --model hydra/money-saver --input "Reply with hello"
 node src/cli.js session --model hydra/money-saver --input "Remember ORCHID" --input "What did I say?"
 ```
 
-Hydra reads persistent settings from `~/.codex/hydra/config.toml`. Use `--config <path>` with any command for an isolated development, test, or one-off profile. Command flags override the selected TOML file for that invocation.
+Hydra reads persistent settings from `~/.hydra/config.toml`. Use `--config <path>` with any command for an isolated development, test, or one-off profile. Command flags override the selected TOML file for that invocation.
 
 `install` backs up `~/.codex/config.toml`, refreshes the merged catalog, and points Codex Desktop at Hydra. `restore` writes the saved backup back.
 
@@ -116,7 +116,7 @@ The prefix avoids name collisions and lets Hydra choose the correct upstream det
 
 Synthetic models are stable `hydra/` catalog entries whose JavaScript selector chooses one direct OpenAI, Ollama, LM Studio, or OMLX model for a request. The selector returns only the target model slug; Hydra then performs exactly one user-visible generation through the existing provider adapter. Synthetic models cannot select other synthetic models.
 
-Choose `Synthetic Models` → `New…` in the menu bar to create a prompt-routed model. The form lists every currently available direct server and local model for the candidate allowlist, fallback, and selector classifier. It also configures per-user-turn or per-conversation scope, selector timeout in seconds (`0` disables it), and generation retry count and delay. Save validates the complete form and rejects duplicate names, generates a selector from Hydra's bundled prompt-router template under `~/.codex/hydra/selectors/`, appends its definition to `config.toml`, and refreshes the running router. The generated classifier receives the configured prompt plus Hydra's normalized request context and must return exactly one allowed generation slug.
+Choose `Synthetic Models` → `New…` in the menu bar to create a prompt-routed model. The form lists every currently available direct server and local model for the candidate allowlist, fallback, and selector classifier. It also configures per-user-turn or per-conversation scope, selector timeout in seconds (`0` disables it), and generation retry count and delay. Save validates the complete form and rejects duplicate names, generates a selector from Hydra's bundled prompt-router template under `~/.hydra/selectors/`, appends its definition to `config.toml`, and refreshes the running router. The generated classifier receives the configured prompt plus Hydra's normalized request context and must return exactly one allowed generation slug.
 
 `install` creates the bundled `hydra/money-saver` preset without overwriting an existing config or selector. Money Saver calls LM Studio's `liquid/lfm2.5-1.2b` with thinking disabled to classify the task using a strict score:
 
@@ -128,7 +128,7 @@ Choose `Synthetic Models` → `New…` in the menu bar to create a prompt-routed
 
 Its concrete fallback is `gpt-5.6-sol`.
 
-Synthetic definitions live alongside Hydra's router settings in `~/.codex/hydra/config.toml`:
+Synthetic definitions live alongside Hydra's router settings in `~/.hydra/config.toml`:
 
 ```toml
 [synthetic_models.money-saver]
@@ -265,7 +265,7 @@ The config file is forced to owner-only permissions because it may contain this 
 
 ## Configuration
 
-All persistent runtime configuration lives in `~/.codex/hydra/config.toml`:
+All persistent runtime configuration lives in `~/.hydra/config.toml`:
 
 ```toml
 [hydra]
@@ -314,14 +314,14 @@ node src/cli.js refresh --config ./profiles/dev.toml
 node src/cli.js install --config ./profiles/dev.toml
 ```
 
-An explicit config defaults generated state to its own directory, which keeps development and test profiles separate from `~/.codex/hydra/`. `codex.home` still determines which Codex installation `install` and `restore` modify. Router settings such as the port and provider URLs take effect when Hydra restarts; `refresh` reloads catalogs and synthetic definitions.
+An explicit config defaults generated state to its own directory, which keeps development and test profiles separate from `~/.hydra/`. `codex.home` still determines which Codex installation `install` and `restore` modify. Router settings such as the port and provider URLs take effect when Hydra restarts; `refresh` reloads catalogs and synthetic definitions.
 
 When `providers.omlx.api_key` is omitted, Hydra reads the existing key from `~/.omlx/settings.json`. An explicit TOML key takes precedence, which also supports remote or custom OMLX installations. Runtime settings otherwise come exclusively from TOML and command flags. Release signing and notarization variables remain build-only inputs.
 
 Generated files live under:
 
 ```text
-~/.codex/hydra/
+~/.hydra/
 ```
 
 Key files:
@@ -351,7 +351,7 @@ node src/cli.js stop
 Debug logs are written to:
 
 ```text
-~/.codex/hydra/hydra.log
+~/.hydra/hydra.log
 ```
 
 Prompt text, normalized messages, tool arguments/results, classifier output, and generated output are not logged. Request bodies are summarized by shape, model, and key names. Sensitive headers are redacted, but header names and value lengths are retained for diagnostics. With synthetic routing, debug records include the request source, selected and ultimate targets, fallback/retry phase, reasoning normalization, context estimates, candidate/provider status, and machine telemetry.

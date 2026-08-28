@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { homedir } from "node:os";
 import path from "node:path";
 import {
   developmentEnvironment,
@@ -7,17 +8,26 @@ import {
   hydraDevelopmentArgs,
 } from "../scripts/dev-context.js";
 
+test("defaults development Hydra state to its own home directory", () => {
+  assert.equal(developmentPaths({}).hydraHome, path.join(homedir(), ".hydra-dev"));
+});
+
 test("uses an isolated Codex home, SQLite root, and non-Desktop port", () => {
   const paths = developmentPaths({
     HYDRA_DEV_CODEX_HOME: "/tmp/hydra-dev-codex",
+    HYDRA_DEV_HOME: "/tmp/hydra-dev",
     HYDRA_SOURCE_CODEX_HOME: "/tmp/desktop-codex",
+    HYDRA_SOURCE_HOME: "/tmp/desktop-hydra",
     HYDRA_DEV_PORT: "4857",
   });
   assert.equal(paths.codexHome, "/tmp/hydra-dev-codex");
   assert.equal(paths.sqliteHome, "/tmp/hydra-dev-codex/sqlite");
+  assert.equal(paths.hydraHome, "/tmp/hydra-dev");
   assert.equal(paths.sourceCodexHome, "/tmp/desktop-codex");
+  assert.equal(paths.sourceHydraHome, "/tmp/desktop-hydra");
   assert.equal(paths.port, 4857);
-  assert.equal(paths.hydraConfigPath, "/tmp/hydra-dev-codex/hydra/config.toml");
+  assert.equal(paths.hydraConfigPath, "/tmp/hydra-dev/config.toml");
+  assert.equal(paths.catalogPath, "/tmp/hydra-dev/hydra-models.json");
   assert.equal(paths.codexBin, path.resolve("scripts/dev-codex"));
   assert.equal(paths.upstreamCodexBin, path.resolve("node_modules/.bin/codex"));
 });

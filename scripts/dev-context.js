@@ -25,13 +25,17 @@ function developmentPort(value) {
 
 export function developmentPaths(environment = process.env) {
   const codexHome = path.resolve(expandHome(environment.HYDRA_DEV_CODEX_HOME ?? "~/.codex-hydra-dev"));
+  const hydraHome = path.resolve(expandHome(environment.HYDRA_DEV_HOME ?? "~/.hydra-dev"));
   const sourceCodexHome = path.resolve(expandHome(environment.HYDRA_SOURCE_CODEX_HOME ?? "~/.codex"));
+  const sourceHydraHome = path.resolve(expandHome(environment.HYDRA_SOURCE_HOME ?? "~/.hydra"));
   return {
     codexHome,
     sqliteHome: path.join(codexHome, "sqlite"),
+    hydraHome,
     sourceCodexHome,
-    hydraConfigPath: path.join(codexHome, "hydra", "config.toml"),
-    catalogPath: path.join(codexHome, "hydra", "hydra-models.json"),
+    sourceHydraHome,
+    hydraConfigPath: path.join(hydraHome, "config.toml"),
+    catalogPath: path.join(hydraHome, "hydra-models.json"),
     codexConfigPath: path.join(codexHome, "config.toml"),
     codexBin: path.join(REPO_ROOT, "scripts", "dev-codex"),
     upstreamCodexBin: path.join(REPO_ROOT, "node_modules", ".bin", "codex"),

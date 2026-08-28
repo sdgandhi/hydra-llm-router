@@ -51,7 +51,7 @@ Commands:
   session     Run multiple prompts in one Codex CLI session through Hydra
 
 Options:
-  --config <path>          Hydra TOML config (default: ~/.codex/hydra/config.toml)
+  --config <path>          Hydra TOML config (default: ~/.hydra/config.toml)
   --port <n>               Router port (default: 3847)
   --codex-home <path>      Codex home (default: ~/.codex)
   --ollama-url <url>       Ollama base URL (default: http://127.0.0.1:11434)
@@ -131,8 +131,7 @@ function commandOptions(value, fallback) {
 
 function resolvedConfigPath(options) {
   if (options.config) return path.resolve(expandHome(options.config));
-  const codexHome = path.resolve(expandHome(options.codex_home ?? "~/.codex"));
-  return path.join(codexHome, "hydra", "config.toml");
+  return path.resolve(expandHome("~/.hydra/config.toml"));
 }
 
 export async function buildConfig(options = {}) {
