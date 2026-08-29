@@ -3,27 +3,25 @@ import assert from "node:assert/strict";
 import moneySaver from "../src/selectors/money-saver.js";
 
 const context = {
-  providers: { lmstudio: { baseUrl: "http://127.0.0.1:11239" } },
   messages: { latestUser: [{ text: "hello" }] },
-  features: { actualContextTokens: 10 },
-  candidates: [],
-  machine: {},
+  features: {
+    nonSystemPromptTokens: 10,
+    previousUserMessages: 2,
+    previousAgentMessages: 1,
+  },
 };
 
 async function withClassifierResult(content, callback) {
-  const originalFetch = globalThis.fetch;
+  const originalCall = globalThis.__hydraCallSelectorModel;
   let request;
-  globalThis.fetch = async (url, options) => {
-    request = { url: String(url), body: JSON.parse(options.body) };
-    return new Response(JSON.stringify({ choices: [{ message: { content } }] }), {
-      status: 200,
-      headers: { "content-type": "application/json" },
-    });
+  globalThis.__hydraCallSelectorModel = async (input) => {
+    request = input;
+    return content;
   };
   try {
     await callback(() => request);
   } finally {
-    globalThis.fetch = originalFetch;
+    globalThis.__hydraCallSelectorModel = originalCall;
   }
 }
 
@@ -33,19 +31,22 @@ for (const [score, model] of [
   [3, "gpt-5.6-sol"],
 ]) {
   test(`Money Saver maps classifier score ${score}`, async () => {
-    await withClassifierResult(JSON.stringify({ score }), async (getRequest) => {
-      assert.equal(await moneySaver(context), model);
+    await withClassifierResult(JSON.stringify({ selection: score }), async (getRequest) => {
+      assert.equal(await moneySaver(context), score);
       const request = getRequest();
-      assert.equal(request.url, "http://127.0.0.1:11239/v1/chat/completions");
-      assert.equal(request.body.reasoning_effort, "none");
-      assert.equal(request.body.chat_template_kwargs.enable_thinking, false);
-      assert.equal(request.body.response_format.json_schema.schema.properties.score.enum.length, 3);
+      assert.deepEqual(request.selectionSlugs, [
+        "lmstudio/liquid/lfm2.5-1.2b",
+        "lmstudio/google/gemma-4-26b-a4b-qat",
+        "gpt-5.6-sol",
+      ]);
+      assert.ok(request.prompt.includes(`${score} = ${model}`));
+      assert.equal(request.contextSummary.nonSystemPromptTokens, 10);
     });
   });
 }
 
 test("Money Saver rejects malformed or extra classifier output", async () => {
-  for (const content of ["1", '{"score":4}', '{"score":1,"explanation":"simple"}']) {
+  for (const content of ["1", '{"selection":4}', '{"selection":1,"explanation":"simple"}']) {
     await withClassifierResult(content, async () => {
       await assert.rejects(moneySaver(context), (error) => error.code === "HYDRA_MONEY_SAVER_SCORE");
     });

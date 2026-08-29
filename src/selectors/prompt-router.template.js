@@ -1,4 +1,3 @@
-const selectorModel = __HYDRA_SELECTOR_MODEL__;
 const selectorPrompt = __HYDRA_SELECTOR_PROMPT__;
 const scoreModels = __HYDRA_SELECTOR_SCORE_MODELS__;
 const selectionValues = scoreModels.map((_, index) => index + 1);
@@ -20,7 +19,6 @@ export default async function select(context) {
     JSON.stringify(requestContext),
   ].join("\n\n");
   const result = await globalThis.__hydraCallSelectorModel({
-    model: selectorModel,
     prompt,
     selectionSlugs: scoreModels,
     contextSummary: {
@@ -54,5 +52,5 @@ export default async function select(context) {
     error.code = "HYDRA_SELECTOR_MODEL_OUTPUT";
     throw error;
   }
-  return scoreModels[parsed.selection - 1];
+  return parsed.selection;
 }

@@ -22,11 +22,18 @@ parentPort.on("message", (message) => {
   }
 });
 
-globalThis.__hydraCallSelectorModel = ({ model, prompt, selectionSlugs, contextSummary }) => new Promise((resolve, reject) => {
-  const id = randomUUID();
-  modelCalls.set(id, { resolve, reject });
-  parentPort.postMessage({ type: "model_call", id, model, prompt, selectionSlugs, contextSummary });
-});
+globalThis.__hydraCallSelectorModel = ({ prompt, selectionSlugs, contextSummary }) => {
+  if (!Array.isArray(selectionSlugs) || selectionSlugs.length === 0) {
+    const error = new Error("Selector model calls require a numbered selection mapping");
+    error.code = "HYDRA_SELECTOR_MODEL_REQUEST";
+    return Promise.reject(error);
+  }
+  return new Promise((resolve, reject) => {
+    const id = randomUUID();
+    modelCalls.set(id, { resolve, reject });
+    parentPort.postMessage({ type: "model_call", id, prompt, selectionSlugs, contextSummary });
+  });
+};
 
 try {
   const moduleUrl = pathToFileURL(workerData.selectorPath);

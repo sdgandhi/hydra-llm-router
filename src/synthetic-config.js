@@ -18,6 +18,8 @@ export const MONEY_SAVER_DEFINITION = `[synthetic_models.money-saver]
 display_name = "Hydra: Money Saver"
 description = "Routes requests by estimated task complexity."
 selector = "selectors/money-saver.js"
+selector_model = "lmstudio/liquid/lfm2.5-1.2b"
+selector_context = ["latest_user", "metadata"]
 candidates = [
   "lmstudio/liquid/lfm2.5-1.2b",
   "lmstudio/google/gemma-4-26b-a4b-qat",
@@ -36,7 +38,6 @@ const ALLOWED_DEFINITION_KEYS = new Set([
   "selector",
   "selector_context",
   "selector_model",
-  "selector_strategy",
   "candidates",
   "fallback_model",
   "routing_scope",
@@ -152,18 +153,7 @@ export async function parseSyntheticConfig(text, { configPath }) {
       throw new Error(`synthetic_models.${name}.routing_scope must be user_turn or conversation`);
     }
     const selector = requiredString(value.selector, `synthetic_models.${name}.selector`);
-    const selectorStrategy = value.selector_strategy == null
-      ? "custom"
-      : requiredString(value.selector_strategy, `synthetic_models.${name}.selector_strategy`);
-    if (!new Set(["custom", "numbered_prompt"]).has(selectorStrategy)) {
-      throw new Error(`synthetic_models.${name}.selector_strategy must be custom or numbered_prompt`);
-    }
-    const selectorModel = value.selector_model == null
-      ? null
-      : directModelSlug(value.selector_model, `synthetic_models.${name}.selector_model`);
-    if (selectorStrategy === "numbered_prompt" && !selectorModel) {
-      throw new Error(`synthetic_models.${name}.selector_model is required for numbered_prompt selectors`);
-    }
+    const selectorModel = directModelSlug(value.selector_model, `synthetic_models.${name}.selector_model`);
     const selectorPath = path.resolve(path.dirname(configPath), selector);
     const snapshot = await selectorSnapshot(selectorPath);
     const definition = {
@@ -176,7 +166,6 @@ export async function parseSyntheticConfig(text, { configPath }) {
       selectorPath,
       selectorHash: snapshot?.selectorHash,
       selectorModel,
-      selectorStrategy,
       selectorContextParts: selectorContextParts(
         value.selector_context,
         `synthetic_models.${name}.selector_context`,
@@ -289,7 +278,6 @@ display_name = ${tomlString(`Hydra: ${displayName}`)}
 description = ${tomlString(`Prompt-routed using ${selectorModel}.`)}
 selector = ${tomlString(selector)}
 selector_model = ${tomlString(selectorModel)}
-selector_strategy = "numbered_prompt"
 selector_context = ${JSON.stringify(selectorContextParts)}
 candidates = ${JSON.stringify(candidates)}
 fallback_model = ${tomlString(fallbackModel)}
@@ -356,7 +344,6 @@ export async function createPromptSyntheticModel(paths, input, { availableModels
   const selector = path.relative(path.dirname(paths.hydraConfigPath), selectorPath);
   const template = await readFile(PROMPT_SELECTOR_TEMPLATE, "utf8");
   const selectorSource = template
-    .replace("__HYDRA_SELECTOR_MODEL__", JSON.stringify(selectorModel))
     .replace("__HYDRA_SELECTOR_PROMPT__", JSON.stringify(selectorPrompt))
     .replace("__HYDRA_SELECTOR_SCORE_MODELS__", JSON.stringify(scoreModels));
   const definition = generatedDefinition({

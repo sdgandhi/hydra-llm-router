@@ -1623,7 +1623,7 @@ test("retries a selected synthetic target then uses its concrete fallback", asyn
   const tempDir = await mkdtemp(join(tmpdir(), "hydra-synthetic-router-"));
   const routesPath = join(tempDir, "routes.json");
   const selectorPath = join(tempDir, "selector.js");
-  const selectorSource = 'export default () => "ollama/tiny";\n';
+  const selectorSource = "export default () => 1;\n";
   await writeFile(selectorPath, selectorSource);
   await writeFile(
     routesPath,
@@ -1712,7 +1712,6 @@ test("lets a prompt selector call a configured direct classifier model", async (
   const selectorPath = join(tempDir, "selector.js");
   const selectorSource = `export default async () => {
     const result = await globalThis.__hydraCallSelectorModel({
-      model: "lmstudio/classifier",
       prompt: "choose",
       selectionSlugs: ["ollama/tiny", "gpt-test"],
       contextSummary: {
@@ -1722,7 +1721,7 @@ test("lets a prompt selector call a configured direct classifier model", async (
         previousAgentMessages: 1,
       },
     });
-    return ["ollama/tiny", "gpt-test"][JSON.parse(result).selection - 1];
+    return JSON.parse(result).selection;
   };\n`;
   await writeFile(selectorPath, selectorSource);
   await writeFile(routesPath, JSON.stringify({
@@ -1754,7 +1753,6 @@ test("lets a prompt selector call a configured direct classifier model", async (
         fallbackModel: "gpt-test",
         effectiveCandidates: ["ollama/tiny", "gpt-test"],
         selectorModel: "lmstudio/classifier",
-        selectorStrategy: "numbered_prompt",
         selectorContextParts: ["latest_user", "metadata"],
         routingScope: "user_turn",
         stickyToolContinuations: true,
@@ -1817,9 +1815,9 @@ test("lets a prompt selector call a configured direct classifier model", async (
     assert.match(log, /"selectionMapping":\[\{"selection":1,"slug":"ollama\/tiny"/);
     assert.match(log, /"nonSystemPromptTokens":10/);
     assert.match(log, /"thinkingEnabled":false/);
-    assert.match(log, /"selectorResult":"ollama\/tiny"/);
+    assert.match(log, /"selectorResult":1/);
     assert.match(log, /"selectorContext":\{"system":/);
-    assert.match(log, /"selectorConfiguration":\{"strategy":"numbered_prompt"/);
+    assert.match(log, /"selectorConfiguration":\{"selectorModel":"lmstudio\/classifier"/);
   } finally {
     configureDebugLog(null);
     if (hydra?.listening) {
@@ -1837,11 +1835,10 @@ test("calls an OpenAI selector model with a streaming Responses request", async 
   const selectorPath = join(tempDir, "selector.js");
   const selectorSource = `export default async () => {
     const result = await globalThis.__hydraCallSelectorModel({
-      model: "gpt-classifier",
       prompt: "choose",
       selectionSlugs: ["ollama/tiny", "gpt-test"],
     });
-    return ["ollama/tiny", "gpt-test"][JSON.parse(result).selection - 1];
+    return JSON.parse(result).selection;
   };\n`;
   await writeFile(selectorPath, selectorSource);
   await writeFile(routesPath, JSON.stringify({
@@ -1869,6 +1866,7 @@ test("calls an OpenAI selector model with a streaming Responses request", async 
         slug: "hydra/prompt-router",
         selectorPath,
         selectorHash: createHash("sha256").update(selectorSource).digest("hex"),
+        selectorModel: "gpt-classifier",
         candidates: ["ollama/tiny"],
         fallbackModel: "gpt-test",
         effectiveCandidates: ["ollama/tiny", "gpt-test"],
@@ -1945,7 +1943,7 @@ test("pins a synthetic Codex session to the OpenAI route that owns previous resp
   const routesPath = join(tempDir, "routes.json");
   const selectorPath = join(tempDir, "selector.js");
   const selectorSource = `export default (context) =>
-    context.messages.latestUser?.content.includes("first") ? "gpt-a" : "gpt-b";\n`;
+    context.messages.latestUser?.content.includes("first") ? 1 : 2;\n`;
   await writeFile(selectorPath, selectorSource);
   await writeFile(routesPath, JSON.stringify({
     "gpt-a": {
@@ -2053,7 +2051,7 @@ test("pins a synthetic session to a known OpenAI conversation owner", async () =
   const tempDir = await mkdtemp(join(tmpdir(), "hydra-synthetic-conversation-state-"));
   const routesPath = join(tempDir, "routes.json");
   const selectorPath = join(tempDir, "selector.js");
-  const selectorSource = `export default () => "gpt-b";\n`;
+  const selectorSource = "export default () => 2;\n";
   await writeFile(selectorPath, selectorSource);
   await writeFile(routesPath, JSON.stringify({
     "gpt-a": { provider: "openai", upstreamModel: "gpt-a-upstream", capabilities: {}, contextWindow: 100000 },
@@ -2134,7 +2132,7 @@ test("locks conversation-scoped synthetic routes to the first successful model",
   const routesPath = join(tempDir, "routes.json");
   const selectorPath = join(tempDir, "selector.js");
   const selectorSource = `export default (context) =>
-    context.messages.latestUser?.content.includes("local") ? "ollama/tiny" : "gpt-test";\n`;
+    context.messages.latestUser?.content.includes("local") ? 1 : 2;\n`;
   await writeFile(selectorPath, selectorSource);
   await writeFile(
     routesPath,
@@ -2230,7 +2228,7 @@ test("keeps tool continuations on the selected user-turn model", async () => {
   const routesPath = join(tempDir, "routes.json");
   const selectorPath = join(tempDir, "selector.js");
   const selectorSource = `export default (context) =>
-    context.messages.latestUser?.content.includes("local") ? "ollama/tiny" : "gpt-test";\n`;
+    context.messages.latestUser?.content.includes("local") ? 1 : 2;\n`;
   await writeFile(selectorPath, selectorSource);
   await writeFile(
     routesPath,

@@ -10,6 +10,7 @@ import {
   runSyntheticSelector,
   selectorContextDiagnostics,
   selectorFeatures,
+  validateSelectorSelection,
   validateSelectorTarget,
 } from "../src/synthetic.js";
 
@@ -108,7 +109,7 @@ test("builds selector context with candidates grouped provider state", async () 
 test("runs selectors in a worker and rejects changed selector files", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "hydra-selector-worker-"));
   const selectorPath = path.join(dir, "selector.js");
-  await writeFile(selectorPath, 'export default async (context) => context.raw.target;\n');
+  await writeFile(selectorPath, 'export default async (context) => context.raw.selection;\n');
   const source = await readFile(selectorPath);
   const definition = {
     ...definitionFixture(),
@@ -116,10 +117,10 @@ test("runs selectors in a worker and rejects changed selector files", async () =
     selectorHash: createHash("sha256").update(source).digest("hex"),
     selectorTimeoutMs: 1000,
   };
-  const result = await runSyntheticSelector({ definition, context: { raw: { target: "gpt-test" } } });
-  assert.equal(result, "gpt-test");
+  const result = await runSyntheticSelector({ definition, context: { raw: { selection: 2 } } });
+  assert.equal(result, 2);
 
-  await writeFile(selectorPath, 'export default () => "ollama/tiny";\n');
+  await writeFile(selectorPath, "export default () => 1;\n");
   await assert.rejects(runSyntheticSelector({ definition, context: { raw: {} } }), /run hydra refresh/);
 });
 
@@ -152,6 +153,14 @@ test("times out selectors and validates target capabilities", async () => {
     () => validateSelectorTarget({ definition, target: "ollama/not-allowed", context, routes }),
     /outside its allowlist/,
   );
+  assert.throws(
+    () => validateSelectorSelection({ definition, selection: "ollama/tiny", context, routes }),
+    /integer selection/,
+  );
+  assert.equal(
+    validateSelectorSelection({ definition, selection: 1, context: { features: { actualContextTokens: 1 } }, routes }).slug,
+    "ollama/tiny",
+  );
 });
 
 test("aborts an in-flight selector model call when the selector times out", async () => {
@@ -159,7 +168,7 @@ test("aborts an in-flight selector model call when the selector times out", asyn
   const selectorPath = path.join(dir, "selector.js");
   await writeFile(
     selectorPath,
-    'export default () => globalThis.__hydraCallSelectorModel({ model: "gpt-test", prompt: "choose" });\n',
+    'export default () => globalThis.__hydraCallSelectorModel({ prompt: "choose", selectionSlugs: ["ollama/tiny", "gpt-test"] });\n',
   );
   const source = await readFile(selectorPath);
   const definition = {
@@ -183,6 +192,41 @@ test("aborts an in-flight selector model call when the selector times out", asyn
     /timed out/,
   );
   assert.equal(aborted, true);
+});
+
+test("rejects legacy selector-model calls without a numbered mapping", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "hydra-selector-model-legacy-"));
+  const selectorPath = path.join(dir, "selector.js");
+  await writeFile(
+    selectorPath,
+    'export default () => globalThis.__hydraCallSelectorModel({ prompt: "choose" });\n',
+  );
+  const source = await readFile(selectorPath);
+  const definition = {
+    ...definitionFixture(),
+    selectorPath,
+    selectorHash: createHash("sha256").update(source).digest("hex"),
+  };
+  await assert.rejects(
+    runSyntheticSelector({ definition, context: {}, callModel: async () => "ollama/tiny" }),
+    /numbered selection mapping/,
+  );
+});
+
+test("rejects legacy selectors that return model slugs", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "hydra-selector-legacy-output-"));
+  const selectorPath = path.join(dir, "selector.js");
+  await writeFile(selectorPath, 'export default () => "ollama/tiny";\n');
+  const source = await readFile(selectorPath);
+  const definition = {
+    ...definitionFixture(),
+    selectorPath,
+    selectorHash: createHash("sha256").update(source).digest("hex"),
+  };
+  await assert.rejects(
+    runSyntheticSelector({ definition, context: {} }),
+    /integer selection/,
+  );
 });
 
 function definitionFixture() {

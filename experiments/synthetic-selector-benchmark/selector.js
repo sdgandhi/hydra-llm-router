@@ -1,6 +1,11 @@
 import { GENERATION_MODELS, variantBySyntheticSlug } from "./variants.js";
 
 const allowed = Object.values(GENERATION_MODELS);
+function selectionForModel(model) {
+  const index = allowed.indexOf(model);
+  if (index < 0) throw new Error(`Benchmark selector returned an unknown model: ${model}`);
+  return index + 1;
+}
 const rubric = `Classify the generation task by the smallest model that can complete it reliably.
 LOW: short, deterministic, single-step work such as arithmetic, extraction, translation, formatting, rewriting, or a brief definition. No consequential judgment.
 MEDIUM: bounded multi-step analysis, ordinary coding/debugging, comparisons, test plans, or one straightforward tool workflow.
@@ -240,7 +245,9 @@ export default async function select(context) {
   if (!variant) throw new Error(`Unknown benchmark variant: ${context.syntheticModel}`);
   const baseUrl = context.providers.lmstudio?.baseUrl;
   if (!baseUrl) throw new Error("LM Studio is unavailable to the benchmark selector");
-  if (variant.output === "binary_json") return binarySelection({ baseUrl, variant, context });
+  if (variant.output === "binary_json") {
+    return selectionForModel(await binarySelection({ baseUrl, variant, context }));
+  }
   const responseFormat = schemaFor(variant.output);
   const messages = variant.messageLayout === "system_user"
     ? [
@@ -260,5 +267,5 @@ export default async function select(context) {
     maxTokens: variant.output === "reason_score_json" ? 128 : 64,
     signal: context.signal,
   });
-  return parseSelection(output, variant.output);
+  return selectionForModel(parseSelection(output, variant.output));
 }

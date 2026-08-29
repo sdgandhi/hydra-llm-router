@@ -321,7 +321,6 @@ export async function runSyntheticSelector({ definition, context, signal, callMo
         }
         try {
           const result = await callModel({
-            model: message.model,
             prompt: message.prompt,
             selectionSlugs: message.selectionSlugs,
             contextSummary: message.contextSummary,
@@ -337,8 +336,15 @@ export async function runSyntheticSelector({ definition, context, signal, callMo
             });
           }
         }
-      } else if (message?.type === "result") finish(resolve, message.result);
-      else if (message?.type === "error") {
+      } else if (message?.type === "result") {
+        if (!Number.isInteger(message.result)) {
+          const error = new Error("Selector must return an integer selection");
+          error.code = "HYDRA_SELECTOR_OUTPUT";
+          finish(reject, error);
+        } else {
+          finish(resolve, message.result);
+        }
+      } else if (message?.type === "error") {
         const error = new Error(message.error?.message ?? "Selector failed");
         error.name = message.error?.name ?? "Error";
         error.code = message.error?.code;
@@ -366,4 +372,17 @@ export function validateSelectorTarget({ definition, target, context, routes }) 
   if (features.hasImages && route.capabilities?.vision === false) throw new Error(`Selected model lacks vision: ${slug}`);
   if (features.toolCount > 0 && route.capabilities?.tools === false) throw new Error(`Selected model lacks tools: ${slug}`);
   return { slug, route };
+}
+
+export function validateSelectorSelection({ definition, selection, context, routes }) {
+  if (!Number.isInteger(selection)) throw new Error("Selector must return an integer selection");
+  if (selection < 1 || selection > definition.effectiveCandidates.length) {
+    throw new Error(`Selector returned selection outside its range: ${selection}`);
+  }
+  return validateSelectorTarget({
+    definition,
+    target: definition.effectiveCandidates[selection - 1],
+    context,
+    routes,
+  });
 }

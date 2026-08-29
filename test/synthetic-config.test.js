@@ -21,10 +21,11 @@ test("normalizes synthetic slugs under the Hydra namespace", () => {
 test("loads validated synthetic definitions and treats fallback as an implicit candidate", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "hydra-synthetic-config-"));
   const selectorPath = path.join(dir, "selector.js");
-  await writeFile(selectorPath, 'export default () => "gpt-test";\n');
+  await writeFile(selectorPath, "export default () => 2;\n");
   const result = await parseSyntheticConfig(
     `[synthetic_models.smart]
 selector = "selector.js"
+selector_model = "gpt-test"
 candidates = ["ollama/tiny"]
 fallback_model = "gpt-test"
 routing_scope = "conversation"
@@ -52,6 +53,7 @@ test("omits definitions whose selector module is missing", async () => {
   const result = await parseSyntheticConfig(
     `[synthetic_models.missing]
 selector = "missing.js"
+selector_model = "gpt-test"
 candidates = ["ollama/tiny"]
 fallback_model = "gpt-test"
 routing_scope = "user_turn"
@@ -69,6 +71,7 @@ test("rejects nesting and invalid definition fields", async () => {
     parseSyntheticConfig(
       `[synthetic_models.bad]
 selector = "bad.js"
+selector_model = "gpt-test"
 candidates = ["hydra/other"]
 fallback_model = "gpt-test"
 routing_scope = "user_turn"
@@ -77,6 +80,19 @@ sticky_tool_continuations = true
       { configPath },
     ),
     /cannot reference a synthetic model/,
+  );
+  await assert.rejects(
+    parseSyntheticConfig(
+      `[synthetic_models.legacy]
+selector = "legacy.js"
+candidates = ["ollama/tiny"]
+fallback_model = "gpt-test"
+routing_scope = "user_turn"
+sticky_tool_continuations = true
+`,
+      { configPath },
+    ),
+    /selector_model must be a non-empty model slug/,
   );
 });
 
@@ -138,7 +154,6 @@ test("creates a prompt-routed model from the bundled selector template", async (
   assert.equal(definition.routingScope, "conversation");
   assert.deepEqual(definition.selectorContextParts, ["latest_user", "metadata"]);
   assert.equal(definition.selectorModel, "gpt-test");
-  assert.equal(definition.selectorStrategy, "numbered_prompt");
   assert.equal(definition.selectorTimeoutMs, 1500);
   assert.equal(definition.retryCount, 3);
   assert.equal(definition.retryDelayMs, 25);
@@ -163,8 +178,7 @@ test("creates a prompt-routed model from the bundled selector template", async (
       return '{"selection":1}';
     },
   });
-  assert.equal(target, "ollama/tiny");
-  assert.equal(classifierRequest.model, "gpt-test");
+  assert.equal(target, 1);
   assert.match(classifierRequest.prompt, /Choose the smallest suitable model/);
   assert.match(classifierRequest.prompt, /1 = ollama\/tiny/);
   assert.match(classifierRequest.prompt, /2 = gpt-test/);

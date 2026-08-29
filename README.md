@@ -107,7 +107,7 @@ The prefix avoids name collisions and lets Hydra choose the correct upstream det
 
 ## Synthetic Models
 
-Synthetic models are stable `hydra/` catalog entries whose JavaScript selector chooses one direct OpenAI, Ollama, LM Studio, or OMLX model for a request. The selector returns only the target model slug; Hydra then performs exactly one user-visible generation through the existing provider adapter. Synthetic models cannot select other synthetic models.
+Synthetic models are stable `hydra/` catalog entries whose JavaScript selector chooses one direct OpenAI, Ollama, LM Studio, or OMLX model for a request. The selector returns a one-based integer into the effective candidate list; Hydra maps that number to its model slug and then performs exactly one user-visible generation through the existing provider adapter. Slug-returning selector modules are not supported.
 
 Choose `Synthetic Models` → `New…` in the menu bar to create a prompt-routed model. The form lists every currently available direct server and local model for the candidate allowlist, fallback, and configurable selector model. Candidates receive routing numbers in the order their checkboxes are selected; a fallback outside that list receives the next number. The editable selector prompt is prefilled with a practical complexity rubric, while Hydra appends the authoritative number-to-slug mapping itself.
 
@@ -125,13 +125,15 @@ The form also configures per-user-turn or per-conversation scope, selector timeo
 
 Its concrete fallback is `gpt-5.6-sol`.
 
-Synthetic definitions live alongside Hydra's router settings in `~/.hydra/config.toml`:
+Synthetic definitions live alongside Hydra's router settings in `~/.hydra/config.toml`. `selector_model` is required; older definitions without it are rejected rather than migrated implicitly:
 
 ```toml
 [synthetic_models.money-saver]
 display_name = "Hydra: Money Saver"
 description = "Routes requests by estimated task complexity."
 selector = "selectors/money-saver.js"
+selector_model = "lmstudio/liquid/lfm2.5-1.2b"
+selector_context = ["latest_user", "metadata"]
 candidates = [
   "lmstudio/liquid/lfm2.5-1.2b",
   "lmstudio/google/gemma-4-26b-a4b-qat",
@@ -148,11 +150,11 @@ Selector paths resolve relative to this TOML file. The module must default-expor
 
 ```js
 export default async function select(context) {
-  return "gpt-5.6-sol";
+  return 3;
 }
 ```
 
-The context contains the raw decoded Responses request, separated system/developer/history/latest-user/tool-call/tool-result data, conservative token and file/image/tool counts, requested reasoning effort, candidate capabilities and context windows, live provider/model status, machine telemetry, request source, and a cancellation signal. The selector must return one direct slug from its candidate allowlist or the concrete fallback, which is implicitly allowlisted. Any other value is a selector error.
+The context contains the raw decoded Responses request, separated system/developer/history/latest-user/tool-call/tool-result data, conservative token and file/image/tool counts, requested reasoning effort, candidate capabilities and context windows, live provider/model status, machine telemetry, request source, and a cancellation signal. The selector must return an integer from `1` through the effective candidate count. Candidate numbers follow `candidates` order, with the concrete fallback appended when it is not already present. Strings, out-of-range numbers, and non-integers are selector errors.
 
 For reproducible local-selector evaluation, see the [30-case synthetic selector benchmark](experiments/synthetic-selector-benchmark/README.md). It compares Liquid LFM2.5 1.2B and Gemma 4 26B A4B across context trimming, rubric/few-shot prompts, sampling settings, and JSON-Schema-constrained outputs without using the Desktop Hydra listener.
 
