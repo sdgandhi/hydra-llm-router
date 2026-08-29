@@ -150,6 +150,8 @@ export default async function select(context) {
 
 The context contains the raw decoded Responses request, separated system/developer/history/latest-user/tool-call/tool-result data, conservative token and file/image/tool counts, requested reasoning effort, candidate capabilities and context windows, live provider/model status, machine telemetry, request source, and a cancellation signal. The selector must return one direct slug from its candidate allowlist or the concrete fallback, which is implicitly allowlisted. Any other value is a selector error.
 
+For reproducible local-selector evaluation, see the [30-case synthetic selector benchmark](experiments/synthetic-selector-benchmark/README.md). It compares Liquid LFM2.5 1.2B and Gemma 4 26B A4B across context trimming, rubric/few-shot prompts, sampling settings, and JSON-Schema-constrained outputs without using the Desktop Hydra listener.
+
 > **Security warning:** selector modules are trusted, unsandboxed JavaScript. They have the Hydra process's access to files, environment variables, credentials, network, dependencies, and subprocesses. A worker thread keeps selector work off the request loop; it is not a security boundary. Only install selector code you trust.
 
 `routing_scope = "user_turn"` evaluates the selector for each user turn. With `sticky_tool_continuations = true`, tool-result continuations reuse that turn's exact target and effective reasoning effort. `routing_scope = "conversation"` instead locks requests sharing a `session-id` to the first successful target. Locks are memory-only and clear on restart or refresh.
