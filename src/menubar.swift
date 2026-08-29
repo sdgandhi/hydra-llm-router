@@ -26,7 +26,7 @@ final class NewSyntheticModelController: NSObject, NSTextFieldDelegate, NSTextVi
   private let fallbackPopup = NSPopUpButton()
   private let selectorPopup = NSPopUpButton()
   private let promptView = PlaceholderTextView()
-  private var contextButtons: [NSButton] = []
+  private let candidateMappingLabel = NSTextField(labelWithString: "Select candidates to assign routing numbers.")
   private let scopePopup = NSPopUpButton()
   private let timeoutField = NSTextField(string: "0")
   private let retryCountField = NSTextField(string: "2")
@@ -34,6 +34,8 @@ final class NewSyntheticModelController: NSObject, NSTextFieldDelegate, NSTextVi
   private let saveButton = NSButton(title: "Save", target: nil, action: nil)
   private let errorLabel = NSTextField(labelWithString: "")
   private var candidateButtons: [NSButton] = []
+  private var candidateOrder: [String] = []
+  private var candidateTitles: [String: String] = [:]
   private let existingSlugs: Set<String>
   private let submit: ([String: Any], String) -> Void
   private var pendingRequestID: String?
@@ -42,7 +44,7 @@ final class NewSyntheticModelController: NSObject, NSTextFieldDelegate, NSTextVi
     self.existingSlugs = existingSlugs
     self.submit = submit
     window = NSWindow(
-      contentRect: NSRect(x: 0, y: 0, width: 700, height: 820),
+      contentRect: NSRect(x: 0, y: 0, width: 700, height: 760),
       styleMask: [.titled],
       backing: .buffered,
       defer: false
@@ -93,10 +95,12 @@ final class NewSyntheticModelController: NSObject, NSTextFieldDelegate, NSTextVi
     candidates.spacing = 5
     for model in models {
       guard let slug = model["slug"] as? String else { continue }
-      let button = NSButton(checkboxWithTitle: model["title"] as? String ?? slug, target: self, action: #selector(valueChanged))
+      let title = model["title"] as? String ?? slug
+      let button = NSButton(checkboxWithTitle: title, target: self, action: #selector(candidateChanged(_:)))
       button.identifier = NSUserInterfaceItemIdentifier(slug)
       candidates.addArrangedSubview(button)
       candidateButtons.append(button)
+      candidateTitles[slug] = title
     }
     if candidateButtons.isEmpty {
       candidates.addArrangedSubview(NSTextField(labelWithString: "No server or local models are available."))
@@ -118,7 +122,13 @@ final class NewSyntheticModelController: NSObject, NSTextFieldDelegate, NSTextVi
     candidateScroll.heightAnchor.constraint(equalToConstant: 170).isActive = true
     candidateDocument.widthAnchor.constraint(equalTo: candidateScroll.contentView.widthAnchor).isActive = true
 
-    promptView.placeholder = "For a simple query choose gpt-5.4-mini, otherwise choose gpt-5.6-sol"
+    promptView.string = """
+Choose the lowest-numbered model that can reliably complete the latest user request.
+
+Use lower numbers for short, deterministic, single-step tasks such as basic questions, arithmetic, formatting, constrained replies, and small edits. Use middle numbers for substantial analysis, coding, or multi-step work. Use the highest numbers for frontier-level ambiguity, high-risk reasoning, or large multi-system work.
+
+Classify the task instead of solving it. Context length and prior message counts are supporting evidence and should not make a simple latest request complex by themselves.
+"""
     promptView.font = NSFont.systemFont(ofSize: NSFont.systemFontSize)
     promptView.isRichText = false
     promptView.isAutomaticQuoteSubstitutionEnabled = false
@@ -129,24 +139,9 @@ final class NewSyntheticModelController: NSObject, NSTextFieldDelegate, NSTextVi
     promptScroll.documentView = promptView
     promptScroll.heightAnchor.constraint(equalToConstant: 100).isActive = true
 
-    let contextChoices: [(String, String)] = [
-      ("system", "System and developer prompts"),
-      ("history", "Message history"),
-      ("latest_user", "Latest user message"),
-      ("tools", "Tool calls and results"),
-      ("metadata", "Token and capability metadata"),
-    ]
-    let contextStack = NSStackView()
-    contextStack.orientation = .vertical
-    contextStack.alignment = .leading
-    contextStack.spacing = 4
-    for (key, title) in contextChoices {
-      let button = NSButton(checkboxWithTitle: title, target: self, action: #selector(valueChanged))
-      button.identifier = NSUserInterfaceItemIdentifier(key)
-      button.state = .on
-      contextStack.addArrangedSubview(button)
-      contextButtons.append(button)
-    }
+    candidateMappingLabel.textColor = .secondaryLabelColor
+    candidateMappingLabel.lineBreakMode = .byWordWrapping
+    candidateMappingLabel.maximumNumberOfLines = 3
 
     scopePopup.addItems(withTitles: ["user_turn", "conversation"])
     scopePopup.selectItem(withTitle: "user_turn")
@@ -164,10 +159,10 @@ final class NewSyntheticModelController: NSObject, NSTextFieldDelegate, NSTextVi
     form.spacing = 12
     form.addArrangedSubview(row("Name", nameField))
     form.addArrangedSubview(row("Candidate models", candidateScroll, alignTop: true))
+    form.addArrangedSubview(row("Number mapping", candidateMappingLabel, alignTop: true))
     form.addArrangedSubview(row("Fallback model", fallbackPopup))
     form.addArrangedSubview(row("Selector model", selectorPopup))
     form.addArrangedSubview(row("Selector prompt", promptScroll, alignTop: true))
-    form.addArrangedSubview(row("Selector context", contextStack, alignTop: true))
     form.addArrangedSubview(row("Scope", scopePopup))
     form.addArrangedSubview(row("Timeout (seconds)", timeoutField))
 
@@ -226,7 +221,41 @@ final class NewSyntheticModelController: NSObject, NSTextFieldDelegate, NSTextVi
     return row
   }
 
-  @objc private func valueChanged() { updateValidation() }
+  @objc private func valueChanged() {
+    updateCandidateNumbers()
+    updateValidation()
+  }
+  @objc private func candidateChanged(_ sender: NSButton) {
+    guard let slug = sender.identifier?.rawValue else { return }
+    if sender.state == .on {
+      if !candidateOrder.contains(slug) { candidateOrder.append(slug) }
+    } else {
+      candidateOrder.removeAll { $0 == slug }
+    }
+    updateCandidateNumbers()
+    updateValidation()
+  }
+
+  private func updateCandidateNumbers() {
+    for button in candidateButtons {
+      guard let slug = button.identifier?.rawValue else { continue }
+      let title = candidateTitles[slug] ?? slug
+      if let index = candidateOrder.firstIndex(of: slug) {
+        button.title = "\(index + 1). \(title)"
+      } else {
+        button.title = title
+      }
+    }
+    var mapping = candidateOrder.enumerated().map { "\($0.offset + 1) = \($0.element)" }
+    if let fallback = fallbackPopup.selectedItem?.representedObject as? String,
+      !candidateOrder.contains(fallback)
+    {
+      mapping.append("\(candidateOrder.count + 1) = \(fallback) (fallback)")
+    }
+    candidateMappingLabel.stringValue = mapping.isEmpty
+      ? "Select candidates to assign routing numbers."
+      : mapping.joined(separator: "  •  ")
+  }
   func controlTextDidChange(_ obj: Notification) { updateValidation() }
   func textDidChange(_ notification: Notification) {
     promptView.needsDisplay = true
@@ -255,7 +284,6 @@ final class NewSyntheticModelController: NSObject, NSTextFieldDelegate, NSTextVi
       && fallbackPopup.selectedItem?.representedObject is String
       && selectorPopup.selectedItem?.representedObject is String
       && !promptView.string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-      && contextButtons.contains(where: { $0.state == .on })
       && nonnegativeNumber(timeoutField, integer: false)
       && nonnegativeNumber(retryCountField, integer: true)
       && nonnegativeNumber(retryDelayField, integer: true)
@@ -285,11 +313,10 @@ final class NewSyntheticModelController: NSObject, NSTextFieldDelegate, NSTextVi
     saveButton.isEnabled = false
     let payload: [String: Any] = [
       "name": nameField.stringValue,
-      "candidates": candidateButtons.filter { $0.state == .on }.compactMap { $0.identifier?.rawValue },
+      "candidates": candidateOrder,
       "fallbackModel": fallbackModel,
       "selectorModel": selectorModel,
       "selectorPrompt": promptView.string,
-      "selectorContextParts": contextButtons.filter { $0.state == .on }.compactMap { $0.identifier?.rawValue },
       "routingScope": scopePopup.titleOfSelectedItem ?? "user_turn",
       "timeoutSeconds": Double(timeoutField.stringValue) ?? 0,
       "retryCount": Int(retryCountField.stringValue) ?? 2,

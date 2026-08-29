@@ -22,10 +22,10 @@ parentPort.on("message", (message) => {
   }
 });
 
-globalThis.__hydraCallSelectorModel = ({ model, prompt }) => new Promise((resolve, reject) => {
+globalThis.__hydraCallSelectorModel = ({ model, prompt, selectionSlugs, contextSummary }) => new Promise((resolve, reject) => {
   const id = randomUUID();
   modelCalls.set(id, { resolve, reject });
-  parentPort.postMessage({ type: "model_call", id, model, prompt });
+  parentPort.postMessage({ type: "model_call", id, model, prompt, selectionSlugs, contextSummary });
 });
 
 try {

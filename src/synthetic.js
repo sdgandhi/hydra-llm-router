@@ -54,6 +54,8 @@ export function normalizeSelectorMessages(body) {
 
 function approximateValueTokens(value) {
   if (value == null) return 0;
+  if (Array.isArray(value) && value.length === 0) return 0;
+  if (!Array.isArray(value) && typeof value === "object" && Object.keys(value).length === 0) return 0;
   const text = typeof value === "string" ? value : JSON.stringify(value);
   return Math.ceil(text.length / 3) + 4;
 }
@@ -76,6 +78,7 @@ export function selectorFeatures(body, messages = normalizeSelectorMessages(body
     history: approximateValueTokens(messages.history),
     latestUser: approximateValueTokens(messages.latestUser),
     tools: approximateValueTokens(body?.tools),
+    toolActivity: approximateValueTokens([...messages.toolCalls, ...messages.toolResults]),
   };
   const imageCount = countStructuredInputs(body?.input, isImagePart);
   const explicitFileCount = countStructuredInputs(
@@ -85,6 +88,11 @@ export function selectorFeatures(body, messages = normalizeSelectorMessages(body
   return {
     approximateTokens: { ...tokenGroups, total: Object.values(tokenGroups).reduce((sum, value) => sum + value, 0) },
     actualContextTokens: Object.values(tokenGroups).reduce((sum, value) => sum + value, 0),
+    nonSystemPromptTokens:
+      tokenGroups.history + tokenGroups.latestUser + tokenGroups.tools + tokenGroups.toolActivity,
+    previousUserMessages: messages.history.filter((message) => message?.role === "user").length,
+    previousAgentMessages: messages.history.filter((message) => message?.role === "assistant").length,
+    latestUserMessageChars: JSON.stringify(messages.latestUser ?? null).length,
     explicitFileCount,
     imageCount,
     hasImages: imageCount > 0,
@@ -315,6 +323,8 @@ export async function runSyntheticSelector({ definition, context, signal, callMo
           const result = await callModel({
             model: message.model,
             prompt: message.prompt,
+            selectionSlugs: message.selectionSlugs,
+            contextSummary: message.contextSummary,
             signal: modelCallController.signal,
           });
           if (!settled) worker.postMessage({ type: "model_call_result", id: message.id, result });

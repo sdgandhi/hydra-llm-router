@@ -2001,9 +2001,55 @@ function responseStreamOutputText(text) {
   return completedText || deltas.join("");
 }
 
+function selectorSelectionConfig(selectionSlugs, allowedSlugs) {
+  if (selectionSlugs == null) return null;
+  if (!Array.isArray(selectionSlugs) || selectionSlugs.length === 0 || selectionSlugs.length > 100) {
+    const error = new Error("Invalid selector model selection mapping");
+    error.code = "HYDRA_SELECTOR_MODEL_REQUEST";
+    throw error;
+  }
+  const slugs = selectionSlugs.map((slug) => typeof slug === "string" ? slug.trim() : "");
+  if (
+    slugs.some((slug) => !slug || !(allowedSlugs ?? []).includes(slug)) ||
+    new Set(slugs).size !== slugs.length
+  ) {
+    const error = new Error("Invalid selector model selection mapping");
+    error.code = "HYDRA_SELECTOR_MODEL_REQUEST";
+    throw error;
+  }
+  const values = slugs.map((_, index) => index + 1);
+  return {
+    slugs,
+    values,
+    mapping: slugs.map((slug, index) => ({ selection: index + 1, slug })),
+    schema: {
+      type: "object",
+      properties: { selection: { type: "integer", enum: values } },
+      required: ["selection"],
+      additionalProperties: false,
+    },
+  };
+}
+
+function safeSelectorContextSummary(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const fields = [
+    "latestUserChars",
+    "nonSystemPromptTokens",
+    "previousUserMessages",
+    "previousAgentMessages",
+  ];
+  return Object.fromEntries(fields.map((field) => [
+    field,
+    Number.isFinite(value[field]) && value[field] >= 0 ? Math.round(value[field]) : 0,
+  ]));
+}
+
 async function callSelectorModel({
   model,
   prompt,
+  selectionSlugs,
+  contextSummary,
   req,
   routes,
   ollamaBaseUrl,
@@ -2029,6 +2075,7 @@ async function callSelectorModel({
     error.code = "HYDRA_SELECTOR_MODEL_UNAVAILABLE";
     throw error;
   }
+  const selectionConfig = selectorSelectionConfig(selectionSlugs, allowedSlugs);
 
   let url;
   let headers = { "content-type": "application/json", accept: "application/json" };
@@ -2040,7 +2087,12 @@ async function callSelectorModel({
       messages: [{ role: "user", content: prompt }],
       stream: false,
       think: false,
+      options: {
+        temperature: 0,
+        num_predict: selectionConfig ? 32 : undefined,
+      },
     };
+    if (selectionConfig) upstreamBody.format = selectionConfig.schema;
   } else if (route.provider === "lmstudio" || route.provider === "omlx") {
     url = new URL("/v1/chat/completions", route.provider === "omlx" ? omlxBaseUrl : lmStudioBaseUrl);
     if (route.provider === "omlx" && omlxApiKey) headers.authorization = `Bearer ${omlxApiKey}`;
@@ -2049,10 +2101,20 @@ async function callSelectorModel({
       messages: [{ role: "user", content: prompt }],
       stream: false,
       temperature: 0,
-      max_tokens: 256,
+      max_tokens: selectionConfig ? 32 : 256,
       reasoning_effort: "none",
       chat_template_kwargs: { enable_thinking: false },
     };
+    if (selectionConfig) {
+      upstreamBody.response_format = {
+        type: "json_schema",
+        json_schema: {
+          name: "hydra_model_selection",
+          strict: true,
+          schema: selectionConfig.schema,
+        },
+      };
+    }
     if (route.provider === "lmstudio") upstreamBody.request_id = `hydra-selector-${randomUUID()}`;
   } else {
     url = upstreamResponsesUrl("/responses", openaiBaseUrl);
@@ -2066,18 +2128,38 @@ async function callSelectorModel({
       input: [{ role: "user", content: prompt }],
       stream: true,
       store: false,
+      temperature: 0,
+      reasoning: { effort: "none" },
+      max_output_tokens: selectionConfig ? 32 : undefined,
     };
+    if (selectionConfig) {
+      upstreamBody.text = {
+        format: {
+          type: "json_schema",
+          name: "hydra_model_selection",
+          strict: true,
+          schema: selectionConfig.schema,
+        },
+      };
+    }
   }
 
   const requestText = JSON.stringify(upstreamBody);
   debugLogSynthetic({
     enabled: debugAuth,
+    always: true,
     event: "selector-model-request",
     payload: {
       source,
       syntheticModel,
       selectorModel: model,
       provider: route.provider,
+      temperature: 0,
+      thinkingEnabled: false,
+      maxOutputTokens: selectionConfig ? 32 : undefined,
+      constrainedSelections: selectionConfig?.values,
+      selectionMapping: selectionConfig?.mapping,
+      selectorContext: safeSelectorContextSummary(contextSummary),
       promptChars: prompt.length,
       requestBytes: Buffer.byteLength(requestText),
     },
@@ -2112,8 +2194,15 @@ async function callSelectorModel({
     throw error;
   }
   const normalizedOutput = stripLocalControlMarkers(output).trim();
+  let parsedSelection;
+  try {
+    parsedSelection = JSON.parse(normalizedOutput)?.selection;
+  } catch {
+    parsedSelection = undefined;
+  }
   debugLogSynthetic({
     enabled: debugAuth,
+    always: true,
     event: "selector-model-response",
     payload: {
       source,
@@ -2123,6 +2212,7 @@ async function callSelectorModel({
       status: response.status,
       outputChars: output.length,
       output,
+      parsedSelection: Number.isInteger(parsedSelection) ? parsedSelection : undefined,
       outputDiagnostics: {
         sha256: createHash("sha256").update(output).digest("hex"),
         lines: output.split(/\r?\n/).length,
@@ -2290,9 +2380,11 @@ async function handleSyntheticRequest({
         definition,
         context,
         signal,
-        callModel: ({ model, prompt, signal: selectorSignal }) => callSelectorModel({
+        callModel: ({ model, prompt, selectionSlugs, contextSummary, signal: selectorSignal }) => callSelectorModel({
           model,
           prompt,
+          selectionSlugs,
+          contextSummary,
           req,
           routes,
           ollamaBaseUrl,
@@ -2329,6 +2421,7 @@ async function handleSyntheticRequest({
 
   debugLogSynthetic({
     enabled: debugAuth,
+    always: true,
     event: "decision",
     payload: {
       source,
@@ -2346,6 +2439,18 @@ async function handleSyntheticRequest({
       effectiveReasoningEffort: effectiveEffort,
       features: context.features,
       selectorContext: selectorContextDiagnostics(body, definition.selectorContextParts),
+      selectorConfiguration: definition.selectorStrategy === "numbered_prompt" ? {
+        strategy: definition.selectorStrategy,
+        selectorModel: definition.selectorModel,
+        latestUserMessageOnly: true,
+        nonSystemPromptTokens: context.features.nonSystemPromptTokens,
+        previousUserMessages: context.features.previousUserMessages,
+        previousAgentMessages: context.features.previousAgentMessages,
+        temperature: 0,
+        thinkingEnabled: false,
+        constrainedSelections: definition.effectiveCandidates.map((_, index) => index + 1),
+        selectionMapping: definition.effectiveCandidates.map((slug, index) => ({ selection: index + 1, slug })),
+      } : undefined,
       candidates: context.candidates,
       providers: context.providers,
       machine: context.machine,

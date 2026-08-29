@@ -25,5 +25,8 @@ test("the native macOS launcher replaces the Finder command file", async () => {
   assert.match(launcherSource, /HYDRA_LOG_STDERR/);
   assert.match(menuSource, /NSOpenPanel/);
   assert.match(menuSource, /withApplicationAt/);
+  assert.match(menuSource, /Choose the lowest-numbered model/);
+  assert.match(menuSource, /candidateOrder\.append/);
+  assert.doesNotMatch(menuSource, /selectorContextParts/);
   await assert.rejects(access(new URL("../Hydra.command", import.meta.url)));
 });

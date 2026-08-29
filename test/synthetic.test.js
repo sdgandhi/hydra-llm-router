@@ -45,6 +45,9 @@ test("separates selector messages and overestimates request tokens", () => {
   assert.equal(features.explicitFileCount, 1);
   assert.equal(features.toolCount, 1);
   assert.equal(features.requestedReasoningEffort, "high");
+  assert.equal(features.previousUserMessages, 1);
+  assert.equal(features.previousAgentMessages, 1);
+  assert.ok(features.nonSystemPromptTokens > features.approximateTokens.latestUser);
   assert.ok(features.actualContextTokens > body.instructions.length / 4);
 });
 

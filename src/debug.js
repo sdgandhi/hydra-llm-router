@@ -124,8 +124,8 @@ export function debugLogCancellation({ enabled, req, route, stage }) {
   writeDebugLine("hydra-cancelled", payload);
 }
 
-export function debugLogSynthetic({ enabled, event, payload }) {
-  if (!enabled) return;
+export function debugLogSynthetic({ enabled, always = false, event, payload }) {
+  if (!enabled && !always) return;
   writeDebugLine(`hydra-synthetic-${event}`, {
     at: new Date().toISOString(),
     ...payload,

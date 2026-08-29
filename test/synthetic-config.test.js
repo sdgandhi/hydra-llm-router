@@ -123,7 +123,7 @@ test("creates a prompt-routed model from the bundled selector template", async (
     fallbackModel: "gpt-test",
     selectorModel: "gpt-test",
     selectorPrompt: "Choose the smallest suitable model.",
-    selectorContextParts: ["latest_user", "metadata"],
+    selectorContextParts: ["system", "history", "tools"],
     routingScope: "conversation",
     timeoutSeconds: 1.5,
     retryCount: 3,
@@ -137,6 +137,8 @@ test("creates a prompt-routed model from the bundled selector template", async (
   const definition = loaded.definitions[0];
   assert.equal(definition.routingScope, "conversation");
   assert.deepEqual(definition.selectorContextParts, ["latest_user", "metadata"]);
+  assert.equal(definition.selectorModel, "gpt-test");
+  assert.equal(definition.selectorStrategy, "numbered_prompt");
   assert.equal(definition.selectorTimeoutMs, 1500);
   assert.equal(definition.retryCount, 3);
   assert.equal(definition.retryDelayMs, 25);
@@ -146,22 +148,36 @@ test("creates a prompt-routed model from the bundled selector template", async (
     definition,
     context: {
       messages: { latestUser: { content: "hello" } },
-      features: { actualContextTokens: 10 },
+      features: {
+        actualContextTokens: 10,
+        nonSystemPromptTokens: 8,
+        previousUserMessages: 2,
+        previousAgentMessages: 1,
+      },
       candidates: [{ slug: "ollama/tiny", fallback: false }],
       machine: {},
       providers: {},
     },
     callModel: async (request) => {
       classifierRequest = request;
-      return "ollama/tiny";
+      return '{"selection":1}';
     },
   });
   assert.equal(target, "ollama/tiny");
   assert.equal(classifierRequest.model, "gpt-test");
   assert.match(classifierRequest.prompt, /Choose the smallest suitable model/);
-  assert.match(classifierRequest.prompt, /Allowed generation models: ollama\/tiny/);
-  assert.match(classifierRequest.prompt, /latestUser/);
+  assert.match(classifierRequest.prompt, /1 = ollama\/tiny/);
+  assert.match(classifierRequest.prompt, /2 = gpt-test/);
+  assert.match(classifierRequest.prompt, /latestUserMessage/);
+  assert.match(classifierRequest.prompt, /nonSystemPromptTokens/);
   assert.doesNotMatch(classifierRequest.prompt, /"system"/);
+  assert.deepEqual(classifierRequest.selectionSlugs, ["ollama/tiny", "gpt-test"]);
+  assert.deepEqual(classifierRequest.contextSummary, {
+    latestUserChars: 19,
+    nonSystemPromptTokens: 8,
+    previousUserMessages: 2,
+    previousAgentMessages: 1,
+  });
 
   await assert.rejects(
     createPromptSyntheticModel(paths, {

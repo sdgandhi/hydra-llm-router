@@ -1710,8 +1710,20 @@ test("lets a prompt selector call a configured direct classifier model", async (
   configureDebugLog(logPath);
   const routesPath = join(tempDir, "routes.json");
   const selectorPath = join(tempDir, "selector.js");
-  const selectorSource = `export default async () =>
-    globalThis.__hydraCallSelectorModel({ model: "lmstudio/classifier", prompt: "choose" });\n`;
+  const selectorSource = `export default async () => {
+    const result = await globalThis.__hydraCallSelectorModel({
+      model: "lmstudio/classifier",
+      prompt: "choose",
+      selectionSlugs: ["ollama/tiny", "gpt-test"],
+      contextSummary: {
+        latestUserChars: 7,
+        nonSystemPromptTokens: 10,
+        previousUserMessages: 2,
+        previousAgentMessages: 1,
+      },
+    });
+    return ["ollama/tiny", "gpt-test"][JSON.parse(result).selection - 1];
+  };\n`;
   await writeFile(selectorPath, selectorSource);
   await writeFile(routesPath, JSON.stringify({
     "lmstudio/classifier": {
@@ -1741,6 +1753,9 @@ test("lets a prompt selector call a configured direct classifier model", async (
         candidates: ["ollama/tiny"],
         fallbackModel: "gpt-test",
         effectiveCandidates: ["ollama/tiny", "gpt-test"],
+        selectorModel: "lmstudio/classifier",
+        selectorStrategy: "numbered_prompt",
+        selectorContextParts: ["latest_user", "metadata"],
         routingScope: "user_turn",
         stickyToolContinuations: true,
         selectorTimeoutMs: 1000,
@@ -1755,7 +1770,7 @@ test("lets a prompt selector call a configured direct classifier model", async (
   globalThis.fetch = async (url, options) => {
     calls.push({ url: String(url), body: JSON.parse(options.body) });
     if (String(url).endsWith("/v1/chat/completions")) {
-      return new Response(JSON.stringify({ choices: [{ message: { content: "ollama/tiny" } }] }), {
+      return new Response(JSON.stringify({ choices: [{ message: { content: '{"selection":1}' } }] }), {
         status: 200,
         headers: { "content-type": "application/json" },
       });
@@ -1775,7 +1790,7 @@ test("lets a prompt selector call a configured direct classifier model", async (
       lmStudioBaseUrl: "http://127.0.0.1:11239",
       openaiBaseUrl: "https://chatgpt.com/backend-api/codex",
       syntheticContextOptions: syntheticContextFixture(),
-      debugAuth: true,
+      debugAuth: false,
     });
     hydra = createHttpServer(handler);
     hydra.listen(0, "127.0.0.1");
@@ -1788,13 +1803,23 @@ test("lets a prompt selector call a configured direct classifier model", async (
     assert.equal(response.status, 200);
     assert.equal((await response.json()).output[0].content[0].text, "routed locally");
     assert.equal(calls[0].body.model, "classifier");
+    assert.equal(calls[0].body.temperature, 0);
+    assert.equal(calls[0].body.max_tokens, 32);
     assert.equal(calls[0].body.chat_template_kwargs.enable_thinking, false);
+    assert.deepEqual(
+      calls[0].body.response_format.json_schema.schema.properties.selection.enum,
+      [1, 2],
+    );
     assert.equal(calls[1].body.model, "tiny");
     const log = await readFile(logPath, "utf8");
     assert.match(log, /hydra-synthetic-selector-model-response/);
-    assert.match(log, /"output":"ollama\/tiny"/);
+    assert.match(log, /"output":"\{\\"selection\\":1\}"/);
+    assert.match(log, /"selectionMapping":\[\{"selection":1,"slug":"ollama\/tiny"/);
+    assert.match(log, /"nonSystemPromptTokens":10/);
+    assert.match(log, /"thinkingEnabled":false/);
     assert.match(log, /"selectorResult":"ollama\/tiny"/);
     assert.match(log, /"selectorContext":\{"system":/);
+    assert.match(log, /"selectorConfiguration":\{"strategy":"numbered_prompt"/);
   } finally {
     configureDebugLog(null);
     if (hydra?.listening) {
@@ -1810,8 +1835,14 @@ test("calls an OpenAI selector model with a streaming Responses request", async 
   const tempDir = await mkdtemp(join(tmpdir(), "hydra-cloud-selector-model-router-"));
   const routesPath = join(tempDir, "routes.json");
   const selectorPath = join(tempDir, "selector.js");
-  const selectorSource = `export default async () =>
-    globalThis.__hydraCallSelectorModel({ model: "gpt-classifier", prompt: "choose" });\n`;
+  const selectorSource = `export default async () => {
+    const result = await globalThis.__hydraCallSelectorModel({
+      model: "gpt-classifier",
+      prompt: "choose",
+      selectionSlugs: ["ollama/tiny", "gpt-test"],
+    });
+    return ["ollama/tiny", "gpt-test"][JSON.parse(result).selection - 1];
+  };\n`;
   await writeFile(selectorPath, selectorSource);
   await writeFile(routesPath, JSON.stringify({
     "gpt-classifier": {
@@ -1857,9 +1888,9 @@ test("calls an OpenAI selector model with a streaming Responses request", async 
     calls.push({ url: String(url), headers: options.headers, body });
     if (body.model === "gpt-classifier") {
       return new Response([
-        'data: {"type":"response.output_text.delta","delta":"ollama/"}',
-        'data: {"type":"response.output_text.delta","delta":"tiny"}',
-        'data: {"type":"response.output_text.done","text":"ollama/tiny"}',
+        'data: {"type":"response.output_text.delta","delta":"{\\\"selection\\\":"}',
+        'data: {"type":"response.output_text.delta","delta":"1}"}',
+        'data: {"type":"response.output_text.done","text":"{\\\"selection\\\":1}"}',
         "data: [DONE]",
         "",
       ].join("\n\n"), { status: 200, headers: { "content-type": "text/event-stream" } });
@@ -1892,6 +1923,10 @@ test("calls an OpenAI selector model with a streaming Responses request", async 
     assert.equal((await response.json()).output[0].content[0].text, "routed locally");
     assert.equal(calls[0].body.model, "gpt-classifier");
     assert.equal(calls[0].body.stream, true);
+    assert.equal(calls[0].body.temperature, 0);
+    assert.equal(calls[0].body.max_output_tokens, 32);
+    assert.equal(calls[0].body.reasoning.effort, "none");
+    assert.deepEqual(calls[0].body.text.format.schema.properties.selection.enum, [1, 2]);
     assert.deepEqual(calls[0].body.input, [{ role: "user", content: "choose" }]);
     assert.equal(calls[0].headers.accept, "text/event-stream");
     assert.equal(calls[1].body.model, "tiny");
