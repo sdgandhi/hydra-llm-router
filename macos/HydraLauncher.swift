@@ -29,9 +29,7 @@ do {
 }
 
 let logURL = hydraURL.appendingPathComponent("hydra.log")
-let legacyLogURL = hydraURL.appendingPathComponent("launcher.log")
 let maxLogBytes: UInt64 = 100 * 1024 * 1024
-try? fileManager.removeItem(at: legacyLogURL)
 if !fileManager.fileExists(atPath: logURL.path) {
   fileManager.createFile(atPath: logURL.path, contents: nil)
 }
