@@ -269,6 +269,11 @@ async function assertSelectorUnchanged(definition) {
 }
 
 export async function runSyntheticSelector({ definition, context, signal, callModel }) {
+  if (definition.selectorType !== "prompt" && definition.selectorType !== "custom") {
+    const error = new Error("Selector definition requires an explicit prompt or custom type");
+    error.code = "HYDRA_SELECTOR_TYPE";
+    throw error;
+  }
   await assertSelectorUnchanged(definition);
   return new Promise((resolve, reject) => {
     const modelCallController = new AbortController();

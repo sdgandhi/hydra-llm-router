@@ -248,6 +248,7 @@ test("menubar shows synthetic config and last target", () => {
           displayName: "Hydra: Smart",
           selector: "selectors/smart.js",
           selectorPath: "/tmp/hydra/selectors/smart.js",
+          selectorType: "custom",
           selectorModel: "lmstudio/classifier",
           candidates: ["ollama/tiny"],
           fallbackModel: "gpt-test",
@@ -270,7 +271,8 @@ test("menubar shows synthetic config and last target", () => {
     title: "Selector: selectors/smart.js",
     path: "/tmp/hydra/selectors/smart.js",
   });
-  assert.equal(synthetic.items[2].items[4].title, "Selector model: lmstudio/classifier");
+  assert.equal(synthetic.items[2].items[4].title, "Selector type: custom");
+  assert.equal(synthetic.items[2].items[5].title, "Selector model: lmstudio/classifier");
   assert.equal(synthetic.items[2].items.at(-1).title, "Last: gpt-test");
 });
 

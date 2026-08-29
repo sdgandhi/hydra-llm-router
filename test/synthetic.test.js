@@ -124,6 +124,16 @@ test("runs selectors in a worker and rejects changed selector files", async () =
   await assert.rejects(runSyntheticSelector({ definition, context: { raw: {} } }), /run hydra refresh/);
 });
 
+test("rejects selector definitions without an explicit type", async () => {
+  await assert.rejects(
+    runSyntheticSelector({
+      definition: { ...definitionFixture(), selectorType: undefined },
+      context: {},
+    }),
+    (error) => error?.code === "HYDRA_SELECTOR_TYPE",
+  );
+});
+
 test("times out selectors and validates target capabilities", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "hydra-selector-timeout-"));
   const selectorPath = path.join(dir, "selector.js");
@@ -232,6 +242,7 @@ test("rejects legacy selectors that return model slugs", async () => {
 function definitionFixture() {
   return {
     slug: "hydra/smart",
+    selectorType: "custom",
     candidates: ["ollama/tiny"],
     fallbackModel: "gpt-test",
     effectiveCandidates: ["ollama/tiny", "gpt-test"],

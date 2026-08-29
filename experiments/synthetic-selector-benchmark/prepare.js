@@ -22,6 +22,7 @@ const definitions = VARIANTS.map((variant) => `[synthetic_models."bench-${varian
 display_name = "Benchmark: ${variant.id}"
 description = "Synthetic selector benchmark fixture."
 selector = ${JSON.stringify(selectorPath)}
+selector_type = "custom"
 selector_model = ${JSON.stringify(variant.selectorModel)}
 selector_context = ["system", "history", "latest_user", "tools", "metadata"]
 candidates = [${JSON.stringify(GENERATION_MODELS.low)}, ${JSON.stringify(GENERATION_MODELS.medium)}]

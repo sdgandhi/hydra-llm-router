@@ -25,6 +25,7 @@ test("loads validated synthetic definitions and treats fallback as an implicit c
   const result = await parseSyntheticConfig(
     `[synthetic_models.smart]
 selector = "selector.js"
+selector_type = "custom"
 selector_model = "gpt-test"
 candidates = ["ollama/tiny"]
 fallback_model = "gpt-test"
@@ -41,6 +42,7 @@ retry_delay_ms = 50
   assert.deepEqual(result.definitions[0].effectiveCandidates, ["ollama/tiny", "gpt-test"]);
   assert.equal(result.definitions[0].slug, "hydra/smart");
   assert.equal(result.definitions[0].routingScope, "conversation");
+  assert.equal(result.definitions[0].selectorType, "custom");
   assert.deepEqual(result.definitions[0].selectorContextParts, [
     "system", "history", "latest_user", "tools", "metadata",
   ]);
@@ -53,6 +55,7 @@ test("omits definitions whose selector module is missing", async () => {
   const result = await parseSyntheticConfig(
     `[synthetic_models.missing]
 selector = "missing.js"
+selector_type = "custom"
 selector_model = "gpt-test"
 candidates = ["ollama/tiny"]
 fallback_model = "gpt-test"
@@ -65,12 +68,40 @@ sticky_tool_continuations = true
   assert.equal(result.omitted[0].slug, "hydra/missing");
 });
 
+test("loads and runs a fully custom numeric selector without a selector model", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "hydra-synthetic-custom-"));
+  const selectorPath = path.join(dir, "custom.js");
+  await writeFile(
+    selectorPath,
+    'export default (context) => context.messages.latestUser?.content === "local" ? 1 : 2;\n',
+  );
+  const result = await parseSyntheticConfig(
+    `[synthetic_models.custom]
+selector = "custom.js"
+selector_type = "custom"
+candidates = ["ollama/tiny"]
+fallback_model = "gpt-test"
+routing_scope = "user_turn"
+sticky_tool_continuations = true
+`,
+    { configPath: path.join(dir, "config.toml") },
+  );
+  const definition = result.definitions[0];
+  assert.equal(definition.selectorType, "custom");
+  assert.equal(definition.selectorModel, null);
+  assert.equal(await runSyntheticSelector({
+    definition,
+    context: { messages: { latestUser: { content: "cloud" } } },
+  }), 2);
+});
+
 test("rejects nesting and invalid definition fields", async () => {
   const configPath = path.join(tmpdir(), "hydra-invalid.toml");
   await assert.rejects(
     parseSyntheticConfig(
       `[synthetic_models.bad]
 selector = "bad.js"
+selector_type = "custom"
 selector_model = "gpt-test"
 candidates = ["hydra/other"]
 fallback_model = "gpt-test"
@@ -92,7 +123,21 @@ sticky_tool_continuations = true
 `,
       { configPath },
     ),
-    /selector_model must be a non-empty model slug/,
+    /selector_type must be a non-empty string/,
+  );
+  await assert.rejects(
+    parseSyntheticConfig(
+      `[synthetic_models.prompt-without-model]
+selector = "prompt.js"
+selector_type = "prompt"
+candidates = ["ollama/tiny"]
+fallback_model = "gpt-test"
+routing_scope = "user_turn"
+sticky_tool_continuations = true
+`,
+      { configPath },
+    ),
+    /selector_model is required for prompt selectors/,
   );
 });
 
@@ -154,6 +199,7 @@ test("creates a prompt-routed model from the bundled selector template", async (
   assert.equal(definition.routingScope, "conversation");
   assert.deepEqual(definition.selectorContextParts, ["latest_user", "metadata"]);
   assert.equal(definition.selectorModel, "gpt-test");
+  assert.equal(definition.selectorType, "prompt");
   assert.equal(definition.selectorTimeoutMs, 1500);
   assert.equal(definition.retryCount, 3);
   assert.equal(definition.retryDelayMs, 25);

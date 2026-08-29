@@ -18,6 +18,7 @@ export const MONEY_SAVER_DEFINITION = `[synthetic_models.money-saver]
 display_name = "Hydra: Money Saver"
 description = "Routes requests by estimated task complexity."
 selector = "selectors/money-saver.js"
+selector_type = "custom"
 selector_model = "lmstudio/liquid/lfm2.5-1.2b"
 selector_context = ["latest_user", "metadata"]
 candidates = [
@@ -36,6 +37,7 @@ const ALLOWED_DEFINITION_KEYS = new Set([
   "display_name",
   "description",
   "selector",
+  "selector_type",
   "selector_context",
   "selector_model",
   "candidates",
@@ -153,7 +155,16 @@ export async function parseSyntheticConfig(text, { configPath }) {
       throw new Error(`synthetic_models.${name}.routing_scope must be user_turn or conversation`);
     }
     const selector = requiredString(value.selector, `synthetic_models.${name}.selector`);
-    const selectorModel = directModelSlug(value.selector_model, `synthetic_models.${name}.selector_model`);
+    const selectorType = requiredString(value.selector_type, `synthetic_models.${name}.selector_type`);
+    if (!new Set(["prompt", "custom"]).has(selectorType)) {
+      throw new Error(`synthetic_models.${name}.selector_type must be prompt or custom`);
+    }
+    const selectorModel = value.selector_model == null
+      ? null
+      : directModelSlug(value.selector_model, `synthetic_models.${name}.selector_model`);
+    if (selectorType === "prompt" && !selectorModel) {
+      throw new Error(`synthetic_models.${name}.selector_model is required for prompt selectors`);
+    }
     const selectorPath = path.resolve(path.dirname(configPath), selector);
     const snapshot = await selectorSnapshot(selectorPath);
     const definition = {
@@ -165,6 +176,7 @@ export async function parseSyntheticConfig(text, { configPath }) {
       selector,
       selectorPath,
       selectorHash: snapshot?.selectorHash,
+      selectorType,
       selectorModel,
       selectorContextParts: selectorContextParts(
         value.selector_context,
@@ -277,6 +289,7 @@ function generatedDefinition({
 display_name = ${tomlString(`Hydra: ${displayName}`)}
 description = ${tomlString(`Prompt-routed using ${selectorModel}.`)}
 selector = ${tomlString(selector)}
+selector_type = "prompt"
 selector_model = ${tomlString(selectorModel)}
 selector_context = ${JSON.stringify(selectorContextParts)}
 candidates = ${JSON.stringify(candidates)}

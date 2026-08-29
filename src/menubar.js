@@ -128,9 +128,12 @@ function syntheticModelsMenu(config) {
         { kind: "reveal", title: `Selector: ${definition.selector}`, path: definition.selectorPath },
         { kind: "info", title: `Candidates: ${definition.candidates.join(", ")}` },
         { kind: "info", title: `Fallback: ${definition.fallbackModel}` },
-        { kind: "info", title: `Selector model: ${definition.selectorModel}` },
+        { kind: "info", title: `Selector type: ${definition.selectorType}` },
+        { kind: "info", title: `Selector model: ${definition.selectorModel ?? "none"}` },
         { kind: "info", title: `Scope: ${definition.routingScope}` },
-        { kind: "info", title: "Selector input: latest user + counts" },
+        { kind: "info", title: definition.selectorType === "prompt"
+          ? "Selector input: latest user + counts"
+          : "Selector input: full normalized context" },
         { kind: "info", title: `Sticky tools: ${definition.stickyToolContinuations ? "on" : "off"}` },
         { kind: "info", title: `Timeout: ${definition.selectorTimeoutMs || "off"}` },
         { kind: "info", title: `Retries: ${definition.retryCount} × ${definition.retryDelayMs}ms` },

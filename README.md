@@ -125,13 +125,14 @@ The form also configures per-user-turn or per-conversation scope, selector timeo
 
 Its concrete fallback is `gpt-5.6-sol`.
 
-Synthetic definitions live alongside Hydra's router settings in `~/.hydra/config.toml`. `selector_model` is required; older definitions without it are rejected rather than migrated implicitly:
+Synthetic definitions live alongside Hydra's router settings in `~/.hydra/config.toml`. `selector_type` is required and has no legacy default. Use `prompt` for form-generated selectors and `custom` for a hand-authored JavaScript selector:
 
 ```toml
 [synthetic_models.money-saver]
 display_name = "Hydra: Money Saver"
 description = "Routes requests by estimated task complexity."
 selector = "selectors/money-saver.js"
+selector_type = "custom"
 selector_model = "lmstudio/liquid/lfm2.5-1.2b"
 selector_context = ["latest_user", "metadata"]
 candidates = [
@@ -154,7 +155,25 @@ export default async function select(context) {
 }
 ```
 
-The context contains the raw decoded Responses request, separated system/developer/history/latest-user/tool-call/tool-result data, conservative token and file/image/tool counts, requested reasoning effort, candidate capabilities and context windows, live provider/model status, machine telemetry, request source, and a cancellation signal. The selector must return an integer from `1` through the effective candidate count. Candidate numbers follow `candidates` order, with the concrete fallback appended when it is not already present. Strings, out-of-range numbers, and non-integers are selector errors.
+Custom selectors receive the same normalized context interface: the raw decoded Responses request, separated system/developer/history/latest-user/tool-call/tool-result data, conservative token and file/image/tool counts, requested reasoning effort, candidate capabilities and context windows, live provider/model status, machine telemetry, request source, and a cancellation signal. They may implement the decision entirely in JavaScript, so `selector_model` is optional for `custom`. If a custom selector calls `globalThis.__hydraCallSelectorModel`, it must configure `selector_model` and supply `selectionSlugs`; Hydra applies the same deterministic constrained-number request used by generated selectors. The JavaScript cannot override the configured classifier model.
+
+Every selector type must return an integer from `1` through the effective candidate count. Candidate numbers follow `candidates` order, with the concrete fallback appended when it is not already present. Strings, out-of-range numbers, and non-integers are selector errors. For example, a fully custom selector can be configured without a classifier:
+
+```toml
+[synthetic_models.local-first]
+selector = "selectors/local-first.js"
+selector_type = "custom"
+candidates = ["ollama/qwen3"]
+fallback_model = "gpt-5.6-sol"
+routing_scope = "user_turn"
+sticky_tool_continuations = true
+```
+
+```js
+export default function select(context) {
+  return context.features.actualContextTokens < 16000 ? 1 : 2;
+}
+```
 
 For reproducible local-selector evaluation, see the [30-case synthetic selector benchmark](experiments/synthetic-selector-benchmark/README.md). It compares Liquid LFM2.5 1.2B and Gemma 4 26B A4B across context trimming, rubric/few-shot prompts, sampling settings, and JSON-Schema-constrained outputs without using the Desktop Hydra listener.
 

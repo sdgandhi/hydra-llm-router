@@ -1644,6 +1644,7 @@ test("retries a selected synthetic target then uses its concrete fallback", asyn
         provider: "synthetic",
         definition: {
           slug: "hydra/smart",
+          selectorType: "custom",
           selectorPath,
           selectorHash: createHash("sha256").update(selectorSource).digest("hex"),
           candidates: ["ollama/tiny"],
@@ -1752,6 +1753,7 @@ test("lets a prompt selector call a configured direct classifier model", async (
         candidates: ["ollama/tiny"],
         fallbackModel: "gpt-test",
         effectiveCandidates: ["ollama/tiny", "gpt-test"],
+        selectorType: "prompt",
         selectorModel: "lmstudio/classifier",
         selectorContextParts: ["latest_user", "metadata"],
         routingScope: "user_turn",
@@ -1817,7 +1819,7 @@ test("lets a prompt selector call a configured direct classifier model", async (
     assert.match(log, /"thinkingEnabled":false/);
     assert.match(log, /"selectorResult":1/);
     assert.match(log, /"selectorContext":\{"system":/);
-    assert.match(log, /"selectorConfiguration":\{"selectorModel":"lmstudio\/classifier"/);
+    assert.match(log, /"selectorConfiguration":\{"selectorType":"prompt","selectorModel":"lmstudio\/classifier"/);
   } finally {
     configureDebugLog(null);
     if (hydra?.listening) {
@@ -1866,6 +1868,7 @@ test("calls an OpenAI selector model with a streaming Responses request", async 
         slug: "hydra/prompt-router",
         selectorPath,
         selectorHash: createHash("sha256").update(selectorSource).digest("hex"),
+        selectorType: "prompt",
         selectorModel: "gpt-classifier",
         candidates: ["ollama/tiny"],
         fallbackModel: "gpt-test",
@@ -1962,6 +1965,7 @@ test("pins a synthetic Codex session to the OpenAI route that owns previous resp
       provider: "synthetic",
       definition: {
         slug: "hydra/stateful",
+        selectorType: "custom",
         selectorPath,
         selectorHash: createHash("sha256").update(selectorSource).digest("hex"),
         candidates: ["gpt-a", "gpt-b"],
@@ -2060,6 +2064,7 @@ test("pins a synthetic session to a known OpenAI conversation owner", async () =
       provider: "synthetic",
       definition: {
         slug: "hydra/conversation-state",
+        selectorType: "custom",
         selectorPath,
         selectorHash: createHash("sha256").update(selectorSource).digest("hex"),
         candidates: ["gpt-a", "gpt-b"],
@@ -2153,6 +2158,7 @@ test("locks conversation-scoped synthetic routes to the first successful model",
         provider: "synthetic",
         definition: {
           slug: "hydra/session",
+          selectorType: "custom",
           selectorPath,
           selectorHash: createHash("sha256").update(selectorSource).digest("hex"),
           candidates: ["ollama/tiny"],
@@ -2249,6 +2255,7 @@ test("keeps tool continuations on the selected user-turn model", async () => {
         provider: "synthetic",
         definition: {
           slug: "hydra/turns",
+          selectorType: "custom",
           selectorPath,
           selectorHash: createHash("sha256").update(selectorSource).digest("hex"),
           candidates: ["ollama/tiny"],
