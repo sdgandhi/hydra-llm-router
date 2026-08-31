@@ -47,7 +47,7 @@ npm run dmg:dev
 
 The output is written to `dist/Hydra-<version>-dev-<architecture>.dmg`. Because the bundled Node executable is architecture-specific, build once on each target architecture you distribute.
 
-Release builds increment the patch version in `package.json` and `package-lock.json` before creating the app and DMG. By default they are ad-hoc signed and cannot be notarized:
+Release builds require a clean Git worktree, increment the patch version in `package.json` and `package-lock.json`, and create the app and DMG. After a successful build (and notarization, when configured), the script commits those two version files as `Release v<version>` and pushes the current branch. By default releases are ad-hoc signed and cannot be notarized:
 
 ```sh
 npm run dmg:release
@@ -67,7 +67,7 @@ HYDRA_NOTARY_PROFILE="hydra-notary" \
 npm run dmg:release
 ```
 
-Never use `dmg:release` for local iteration: every invocation intentionally changes the tracked version, even if a later signing or packaging step fails.
+Never use `dmg:release` for local iteration: every invocation changes the tracked version. A failed signing, packaging, notarization, commit, or push step leaves the version bump or release commit in place for diagnosis and recovery.
 
 For terminal-only use, `serve` can still run without a menu bar:
 

@@ -32,6 +32,10 @@ function run(command, args, options = {}) {
   execFileSync(command, args, { stdio: "inherit", ...options });
 }
 
+function commandOutput(command, args, options = {}) {
+  return execFileSync(command, args, { encoding: "utf8", ...options }).trim();
+}
+
 function writeJson(filePath, value) {
   writeFileSync(filePath, `${JSON.stringify(value, null, 2)}\n`);
 }
@@ -53,6 +57,25 @@ function bumpVersion() {
   writeJson(packagePath, packageJson);
   writeJson(lockPath, lockJson);
   return version;
+}
+
+export function releaseGitCommands(version) {
+  return [
+    ["add", "--", "package.json", "package-lock.json"],
+    ["commit", "-m", `Release v${version}`],
+    ["push"],
+  ];
+}
+
+function ensureCleanReleaseTree() {
+  const status = commandOutput("git", ["status", "--porcelain", "--untracked-files=all"], { cwd: repoDir });
+  if (status) throw new Error("Release builds require a clean Git worktree. Commit or stash changes first.");
+}
+
+function commitAndPushVersion(version) {
+  for (const [command, ...args] of releaseGitCommands(version)) {
+    run("git", [command, ...args], { cwd: repoDir });
+  }
 }
 
 export function infoPlist(version) {
@@ -99,6 +122,8 @@ export function buildMacDmg({ release = false } = {}) {
     throw new Error("Ad-hoc release builds cannot be notarized; unset HYDRA_NOTARY_PROFILE or provide a Developer ID identity.");
   }
   const distributionSigning = release && !adHoc;
+
+  if (release) ensureCleanReleaseTree();
 
   const packageJson = JSON.parse(readFileSync(path.join(repoDir, "package.json"), "utf8"));
   const version = release ? bumpVersion() : packageJson.version;
@@ -166,6 +191,8 @@ export function buildMacDmg({ release = false } = {}) {
     run("/usr/bin/xcrun", ["notarytool", "submit", dmgPath, "--keychain-profile", process.env.HYDRA_NOTARY_PROFILE, "--wait"]);
     run("/usr/bin/xcrun", ["stapler", "staple", dmgPath]);
   }
+
+  if (release) commitAndPushVersion(version);
 
   console.log(`Built ${dmgPath}`);
   console.log(`Version: ${version}`);
