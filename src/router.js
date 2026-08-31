@@ -16,6 +16,7 @@ import {
   debugLogSynthetic,
 } from "./debug.js";
 import { ResponseGate } from "./response-gate.js";
+import { ResponsesCommentaryTransform } from "./responses-commentary.js";
 import {
   buildSelectorContext,
   runSyntheticSelector,
@@ -2229,12 +2230,16 @@ async function runDirectAttempts({
   debugAuth,
   source,
   dispatchArgs,
+  routingCommentary,
 }) {
   let lastError;
   for (let attempt = 0; attempt <= definition.retryCount; attempt += 1) {
     signal.throwIfAborted();
     const route = routes[targetSlug];
-    const gate = new ResponseGate(res);
+    const bodyTransform = routingCommentary
+      ? new ResponsesCommentaryTransform(`Hydra routed this turn to ${targetSlug}.`)
+      : null;
+    const gate = new ResponseGate(res, { bodyTransform });
     debugLogSynthetic({
       enabled: debugAuth,
       event: "attempt",
@@ -2484,6 +2489,7 @@ async function handleSyntheticRequest({
         debugAuth,
         source,
         dispatchArgs,
+        routingCommentary: definition.showRoutingCommentary !== false && !isToolContinuationInput(body),
       });
     } catch (error) {
       if (error.hydraPostCommit || selectionFallback || statePinned) throw error;
@@ -2501,6 +2507,7 @@ async function handleSyntheticRequest({
         debugAuth,
         source,
         dispatchArgs,
+        routingCommentary: definition.showRoutingCommentary !== false && !isToolContinuationInput(body),
       });
     }
   } catch (error) {

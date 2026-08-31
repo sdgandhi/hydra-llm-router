@@ -142,10 +142,16 @@ candidates = [
 fallback_model = "gpt-5.6-sol"
 routing_scope = "user_turn"
 sticky_tool_continuations = true
+show_routing_commentary = true
 selector_timeout_ms = 0
 retry_count = 2
 retry_delay_ms = 1000
 ```
+
+`show_routing_commentary` defaults to `true`. Before the selected model's output, Hydra adds a standard
+assistant message with `phase = "commentary"` and `agent_name = "hydra-router"` naming the concrete model
+serving the turn. Set it to `false` to leave the Responses output untouched. Tool-call continuations do not
+repeat the notice.
 
 Selector paths resolve relative to this TOML file. The module must default-export a synchronous or asynchronous function:
 

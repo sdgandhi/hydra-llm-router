@@ -7,9 +7,10 @@ function chunkBuffer(chunk, encoding) {
 }
 
 export class ResponseGate extends EventEmitter {
-  constructor(destination) {
+  constructor(destination, { bodyTransform = null } = {}) {
     super();
     this.destination = destination;
+    this.bodyTransform = bodyTransform;
     this.statusCode = 200;
     this.responseHeaders = {};
     this.buffered = [];
@@ -38,7 +39,11 @@ export class ResponseGate extends EventEmitter {
 
   write(chunk, encoding, callback) {
     const data = chunkBuffer(chunk, encoding);
-    if (this.committed) return this.destination.write(data, callback);
+    if (this.committed) {
+      const writable = this.writeDestination(data);
+      callback?.();
+      return writable;
+    }
     this.buffered.push(data);
     if (this.statusCode < 400 && this.isCompleteSseEventBuffered()) this.commit();
     callback?.();
@@ -49,7 +54,10 @@ export class ResponseGate extends EventEmitter {
     if (chunk != null) this.write(chunk, encoding);
     if (!this.committed && this.statusCode < 400) this.commit();
     this.finished = true;
-    if (this.committed) this.destination.end(callback);
+    if (this.committed) {
+      for (const data of this.bodyTransform?.end?.() ?? []) this.destination.write(data);
+      this.destination.end(callback);
+    }
     else callback?.();
     return this;
   }
@@ -80,9 +88,17 @@ export class ResponseGate extends EventEmitter {
   commit() {
     if (this.committed) return;
     this.committed = true;
-    this.destination.writeHead(this.statusCode, this.responseHeaders);
-    for (const chunk of this.buffered) this.destination.write(chunk);
+    const headers = this.bodyTransform?.headers?.(this.responseHeaders) ?? this.responseHeaders;
+    this.destination.writeHead(this.statusCode, headers);
+    for (const chunk of this.buffered) this.writeDestination(chunk);
     this.buffered = [];
+  }
+
+  writeDestination(chunk) {
+    const chunks = this.bodyTransform?.write?.(chunk) ?? [chunk];
+    let writable = true;
+    for (const data of chunks) writable = this.destination.write(data) && writable;
+    return writable;
   }
 
   bufferedBody() {

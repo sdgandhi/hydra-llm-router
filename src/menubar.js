@@ -135,6 +135,7 @@ function syntheticModelsMenu(config) {
           ? "Selector input: latest user + counts"
           : "Selector input: full normalized context" },
         { kind: "info", title: `Sticky tools: ${definition.stickyToolContinuations ? "on" : "off"}` },
+        { kind: "info", title: `Routing commentary: ${definition.showRoutingCommentary === false ? "off" : "on"}` },
         { kind: "info", title: `Timeout: ${definition.selectorTimeoutMs || "off"}` },
         { kind: "info", title: `Retries: ${definition.retryCount} × ${definition.retryDelayMs}ms` },
         { kind: "info", title: last ? `Last: ${last.ultimate}` : "Last: none" },

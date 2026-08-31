@@ -28,6 +28,7 @@ candidates = [
 fallback_model = "gpt-5.6-sol"
 routing_scope = "user_turn"
 sticky_tool_continuations = true
+show_routing_commentary = true
 selector_timeout_ms = 0
 retry_count = 2
 retry_delay_ms = 1000
@@ -44,6 +45,7 @@ const ALLOWED_DEFINITION_KEYS = new Set([
   "fallback_model",
   "routing_scope",
   "sticky_tool_continuations",
+  "show_routing_commentary",
   "selector_timeout_ms",
   "retry_count",
   "retry_delay_ms",
@@ -190,6 +192,12 @@ export async function parseSyntheticConfig(text, { configPath }) {
         value.sticky_tool_continuations,
         `synthetic_models.${name}.sticky_tool_continuations`,
       ),
+      showRoutingCommentary: value.show_routing_commentary == null
+        ? true
+        : requiredBoolean(
+            value.show_routing_commentary,
+            `synthetic_models.${name}.show_routing_commentary`,
+          ),
       selectorTimeoutMs: nonnegativeInteger(
         value.selector_timeout_ms,
         `synthetic_models.${name}.selector_timeout_ms`,
@@ -296,6 +304,7 @@ candidates = ${JSON.stringify(candidates)}
 fallback_model = ${tomlString(fallbackModel)}
 routing_scope = ${tomlString(routingScope)}
 sticky_tool_continuations = true
+show_routing_commentary = true
 selector_timeout_ms = ${selectorTimeoutMs}
 retry_count = ${retryCount}
 retry_delay_ms = ${retryDelayMs}

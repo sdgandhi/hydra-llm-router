@@ -1652,6 +1652,7 @@ test("retries a selected synthetic target then uses its concrete fallback", asyn
           effectiveCandidates: ["ollama/tiny", "gpt-test"],
           routingScope: "user_turn",
           stickyToolContinuations: true,
+          showRoutingCommentary: false,
           selectorTimeoutMs: 1000,
           retryCount: 1,
           retryDelayMs: 1,
@@ -1691,7 +1692,9 @@ test("retries a selected synthetic target then uses its concrete fallback", asyn
       body: JSON.stringify({ model: "hydra/smart", input: "hello", stream: false }),
     });
     assert.equal(response.status, 200);
-    assert.equal((await response.json()).id, "resp_cloud");
+    const body = await response.json();
+    assert.equal(body.id, "resp_cloud");
+    assert.deepEqual(body.output, []);
     assert.equal(ollamaAttempts, 2);
     assert.equal(cloudAttempts, 1);
     assert.equal(handler.syntheticState.lastSelections.get("hydra/smart").ultimate, "gpt-test");
@@ -1801,7 +1804,10 @@ test("lets a prompt selector call a configured direct classifier model", async (
       body: JSON.stringify({ model: "hydra/prompt-router", input: "hello", stream: false }),
     });
     assert.equal(response.status, 200);
-    assert.equal((await response.json()).output[0].content[0].text, "routed locally");
+    const routed = await response.json();
+    assert.equal(routed.output[0].content[0].text, "Hydra routed this turn to ollama/tiny.");
+    assert.equal(routed.output[0].phase, "commentary");
+    assert.equal(routed.output[1].content[0].text, "routed locally");
     assert.equal(calls[0].body.model, "classifier");
     assert.equal(calls[0].body.temperature, 0);
     assert.equal(calls[0].body.max_tokens, 32);
@@ -1921,7 +1927,10 @@ test("calls an OpenAI selector model with a streaming Responses request", async 
       body: JSON.stringify({ model: "hydra/prompt-router", input: "hello", stream: false }),
     });
     assert.equal(response.status, 200);
-    assert.equal((await response.json()).output[0].content[0].text, "routed locally");
+    const routed = await response.json();
+    assert.equal(routed.output[0].content[0].text, "Hydra routed this turn to ollama/tiny.");
+    assert.equal(routed.output[0].phase, "commentary");
+    assert.equal(routed.output[1].content[0].text, "routed locally");
     assert.equal(calls[0].body.model, "gpt-classifier");
     assert.equal(calls[0].body.stream, true);
     assert.equal(calls[0].body.temperature, 0);
@@ -2020,7 +2029,11 @@ test("pins a synthetic Codex session to the OpenAI route that owns previous resp
 
     let response = await request("first request");
     assert.equal(response.status, 200);
-    await response.text();
+    const firstText = await response.text();
+    assert.match(firstText, /Hydra routed this turn to gpt-a\./);
+    assert.match(firstText, /"phase":"commentary"/);
+    assert.match(firstText, /"agent_name":"hydra-router"/);
+    assert.match(firstText, /"type":"response.output_item.added","output_index":0/);
     const firstResponseId = "resp_gpt-a-upstream_1";
 
     response = await request("select b if this were stateless", { previous_response_id: firstResponseId });
@@ -2307,10 +2320,12 @@ test("keeps tool continuations on the selected user-turn model", async () => {
 
     let response = await request("use local");
     assert.equal(response.status, 200);
-    await response.text();
+    let body = await response.json();
+    assert.equal(body.output[0].phase, "commentary");
     response = await request([{ type: "function_call_output", call_id: "call-1", output: "tool result" }]);
     assert.equal(response.status, 200);
-    await response.text();
+    body = await response.json();
+    assert.equal(body.output.some((item) => item.phase === "commentary"), false);
     response = await request("use cloud now");
     assert.equal(response.status, 200);
     await response.text();

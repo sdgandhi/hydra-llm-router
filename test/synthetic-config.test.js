@@ -47,7 +47,27 @@ retry_delay_ms = 50
     "system", "history", "latest_user", "tools", "metadata",
   ]);
   assert.equal(result.definitions[0].selectorTimeoutMs, 20);
+  assert.equal(result.definitions[0].showRoutingCommentary, true);
   assert.match(result.definitions[0].selectorHash, /^[a-f0-9]{64}$/);
+});
+
+test("allows routing commentary to be disabled per synthetic model", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "hydra-synthetic-commentary-"));
+  const selectorPath = path.join(dir, "selector.js");
+  await writeFile(selectorPath, "export default () => 1;\n");
+  const result = await parseSyntheticConfig(
+    `[synthetic_models.quiet]
+selector = "selector.js"
+selector_type = "custom"
+candidates = ["ollama/tiny"]
+fallback_model = "gpt-test"
+routing_scope = "user_turn"
+sticky_tool_continuations = true
+show_routing_commentary = false
+`,
+    { configPath: path.join(dir, "config.toml") },
+  );
+  assert.equal(result.definitions[0].showRoutingCommentary, false);
 });
 
 test("omits definitions whose selector module is missing", async () => {
@@ -203,6 +223,8 @@ test("creates a prompt-routed model from the bundled selector template", async (
   assert.equal(definition.selectorTimeoutMs, 1500);
   assert.equal(definition.retryCount, 3);
   assert.equal(definition.retryDelayMs, 25);
+  assert.equal(definition.showRoutingCommentary, true);
+  assert.match(await readFile(paths.hydraConfigPath, "utf8"), /show_routing_commentary = true/);
 
   let classifierRequest;
   const target = await runSyntheticSelector({
