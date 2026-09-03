@@ -2,6 +2,10 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { evaluateTask, summarizeResults, validateBenchmarkConfig } from "../benchmark/run.js";
+import { materializeHydraConfig } from "../benchmark/hydra.js";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 
 const config = {
   schema_version: 1,
@@ -42,4 +46,18 @@ test("summarizes one result set per configured route", () => {
   assert.equal(summary.total_cases, 2);
   assert.equal(summary.routes.one.success_rate, 1);
   assert.equal(summary.routes.two.success_rate, 0);
+});
+
+test("materializes the committed Hydra template outside the source tree", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "metron-hydra-config-"));
+  try {
+    const target = path.join(root, "config.toml");
+    await materializeHydraConfig({ runtimeConfig: target });
+    const text = await readFile(target, "utf8");
+    assert.doesNotMatch(text, /__REPO_ROOT__/);
+    assert.match(text, /port = 3857/);
+    assert.match(text, /machine_hour_usd = 0/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });

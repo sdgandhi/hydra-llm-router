@@ -16,7 +16,7 @@
     "codex_bin": "node_modules/.bin/codex",
     "codex_home": "~/.codex-hydra-dev",
     "hydra_url": "http://127.0.0.1:3857",
-    "catalog_path": "~/.hydra-dev/hydra-models.json",
+    "catalog_path": "/tmp/metron-benchmark-hydra/hydra-models.json",
     "reasoning": "low"
   },
   "output_dir": "benchmark/runs"

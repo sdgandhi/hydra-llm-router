@@ -1,0 +1,53 @@
+[hydra]
+port = 3857
+debug = true
+menubar = false
+data_dir = "/tmp/metron-benchmark-hydra"
+
+[codex]
+home = "~/.codex-hydra-dev"
+binary = "__REPO_ROOT__/node_modules/.bin/codex"
+
+[providers.openai]
+base_url = "https://chatgpt.com/backend-api/codex"
+
+[providers.ollama]
+base_url = "http://127.0.0.1:11434"
+
+[providers.lmstudio]
+base_url = "http://127.0.0.1:11239"
+
+[providers.omlx]
+base_url = "http://127.0.0.1:8000"
+
+[app_tools]
+mode = "off"
+servers = ["codex_apps"]
+
+[tools]
+web_search_commands = [["@hydra/ddgr"]]
+
+[metron]
+enabled = true
+capture_codex = false
+machine_hour_usd = 0
+rate_card = "bundled"
+
+[synthetic_models.money-saver]
+display_name = "Hydra: Money Saver"
+description = "Routes requests by estimated task complexity."
+selector = "__REPO_ROOT__/src/selectors/money-saver.js"
+selector_type = "custom"
+selector_model = "lmstudio/liquid/lfm2.5-1.2b"
+selector_context = ["latest_user", "metadata"]
+candidates = [
+  "lmstudio/liquid/lfm2.5-1.2b",
+  "lmstudio/google/gemma-4-26b-a4b-qat",
+]
+fallback_model = "gpt-5.6-sol"
+routing_scope = "user_turn"
+sticky_tool_continuations = true
+show_routing_commentary = false
+selector_timeout_ms = 0
+retry_count = 2
+retry_delay_ms = 1000
