@@ -29,6 +29,9 @@ import {
   loadSyntheticConfig,
 } from "./synthetic-config.js";
 import { ensureHydraConfig, loadHydraSettings } from "./hydra-config.js";
+import { createCodexTailer } from "./metron/codex.js";
+import { createHydraTelemetry } from "./metron/hydra.js";
+import { createMetronStore } from "./metron/store.js";
 import { hydraVersion } from "./version.js";
 
 const commands = new Set(["serve", "stop", "refresh", "install", "restore", "status", "models", "route", "prompt", "session"]);
@@ -181,6 +184,10 @@ export async function buildConfig(options = {}) {
     webSearchCommands: commandOptions(options.web_search_command, saved.webSearchCommands),
     debugAuth: true,
     noMenuBar: !menubar,
+    metronEnabled: saved.metronEnabled,
+    metronCaptureCodex: saved.metronCaptureCodex,
+    metronMachineHourUsd: saved.metronMachineHourUsd,
+    metronRateCard: saved.metronRateCard,
   };
 }
 
@@ -290,6 +297,24 @@ export async function main() {
     toolServers: config.appToolServers,
     cwd: process.cwd(),
   });
+  const metronStore = config.metronEnabled
+    ? createMetronStore({ eventsDir: config.paths.metronEventsDir })
+    : null;
+  const metronTelemetry = config.metronEnabled
+    ? createHydraTelemetry({
+        store: metronStore,
+        onError: (error) => console.error(`Metron telemetry write failed: ${error.message}`),
+      })
+    : null;
+  const metronTailer = config.metronEnabled && config.metronCaptureCodex
+    ? createCodexTailer({
+        codexHome: config.paths.codexHome,
+        cursorPath: config.paths.metronCursorsPath,
+        store: metronStore,
+      })
+    : null;
+  metronTailer?.start();
+  const metronRuntime = { store: metronStore, telemetry: metronTelemetry, tailer: metronTailer };
   const handler = createHydraHandler({
     paths: config.paths,
     ollamaBaseUrl: config.ollamaBaseUrl,
@@ -303,6 +328,7 @@ export async function main() {
     appServerBridge,
     onSyntheticSelection: () => menuBar?.update(config),
     onReload: reloadRuntimeView,
+    telemetry: metronTelemetry,
   });
   config.syntheticState = handler.syntheticState;
   config.emulatedToolStatuses = await emulatedToolStatuses(config.webSearchCommands);
@@ -334,6 +360,7 @@ export async function main() {
       appServerBridge,
       signal,
       restoreOnQuit,
+      metronRuntime,
     });
   };
 
@@ -661,6 +688,7 @@ export async function shutdownHydra({
   appServerBridge = null,
   signal,
   restoreOnQuit = false,
+  metronRuntime = null,
   restoreImpl = restoreConfig,
   removePidFileImpl = removePidFile,
   exitImpl = process.exit,
@@ -688,6 +716,9 @@ export async function shutdownHydra({
   }
 
   await closeServer(server);
+  await metronRuntime?.tailer?.stop();
+  await metronRuntime?.telemetry?.flush();
+  await metronRuntime?.store?.flush();
   await removePidFileImpl(config.paths, process.pid);
   appServerBridge?.close();
   menuBar?.stop();

@@ -121,7 +121,7 @@ export async function parseSyntheticConfig(text, { configPath }) {
   }
 
   const topLevelKeys = Object.keys(parsed);
-  const allowedTopLevel = new Set(["hydra", "codex", "providers", "app_tools", "tools", "synthetic_models"]);
+  const allowedTopLevel = new Set(["hydra", "codex", "providers", "app_tools", "tools", "metron", "synthetic_models"]);
   const unknownTopLevel = topLevelKeys.filter((key) => !allowedTopLevel.has(key));
   if (unknownTopLevel.length) throw new Error(`Unknown Hydra config key: ${unknownTopLevel[0]}`);
 

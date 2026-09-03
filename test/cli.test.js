@@ -35,6 +35,9 @@ test("parses app tool bridge flags", async () => {
     assert.equal(config.codexBin, "/tmp/codex");
     assert.deepEqual(config.appToolServers, ["codex_apps", "node_repl"]);
     assert.equal(config.lmStudioBaseUrl, "http://127.0.0.1:1234");
+    assert.equal(config.metronEnabled, true);
+    assert.equal(config.metronCaptureCodex, true);
+    assert.equal(config.metronMachineHourUsd, 0);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

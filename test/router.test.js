@@ -21,6 +21,7 @@ import {
   upstreamResponsesUrl,
 } from "../src/router.js";
 import { configureDebugLog } from "../src/debug.js";
+import { createHydraTelemetry } from "../src/metron/hydra.js";
 
 test("forwards /responses under an OpenAI-compatible /v1 base path", () => {
   assert.equal(
@@ -193,6 +194,53 @@ test("accepts Codex-style stateless follow-ups containing complete history", asy
     assert.deepEqual(upstreamBody.messages, input);
     assert.equal("previous_response_id" in upstreamBody, false);
     assert.equal("conversation" in upstreamBody, false);
+  } finally {
+    if (hydra?.listening) {
+      hydra.close();
+      await Promise.allSettled([once(hydra, "close")]);
+    }
+    globalThis.fetch = originalFetch;
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("emits privacy-safe Metron events for a direct Hydra response", async () => {
+  const tempDir = await mkdtemp(join(tmpdir(), "hydra-metron-direct-"));
+  const routesPath = join(tempDir, "routes.json");
+  await writeFile(routesPath, JSON.stringify({
+    "lmstudio/tiny": { provider: "lmstudio", upstreamModel: "tiny", capabilities: {} },
+  }));
+  const events = [];
+  const telemetry = createHydraTelemetry({
+    store: { async emit(event) { events.push(event); } },
+  });
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(JSON.stringify({
+    choices: [{ message: { content: "private answer" } }],
+    usage: { prompt_tokens: 7, completion_tokens: 2, total_tokens: 9 },
+  }), { status: 200, headers: { "content-type": "application/json" } });
+  let hydra;
+  try {
+    const handler = createHydraHandler({
+      paths: { routesPath },
+      ollamaBaseUrl: "http://127.0.0.1:11434",
+      lmStudioBaseUrl: "http://127.0.0.1:11239",
+      openaiBaseUrl: "https://chatgpt.com/backend-api/codex",
+      telemetry,
+    });
+    hydra = createHttpServer(handler);
+    hydra.listen(0, "127.0.0.1");
+    await once(hydra, "listening");
+    const response = await originalFetch(`http://127.0.0.1:${hydra.address().port}/responses`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "session-id": "metron-session" },
+      body: JSON.stringify({ model: "lmstudio/tiny", input: "private prompt", stream: false }),
+    });
+    assert.equal(response.status, 200);
+    await telemetry.flush();
+    assert.deepEqual(events.map((event) => event.type), ["generation.started", "generation.completed"]);
+    assert.equal(events[1].data.usage.total_tokens, 9);
+    assert.doesNotMatch(JSON.stringify(events), /private prompt|private answer/);
   } finally {
     if (hydra?.listening) {
       hydra.close();
@@ -1663,6 +1711,8 @@ test("retries a selected synthetic target then uses its concrete fallback", asyn
   const originalFetch = globalThis.fetch;
   let ollamaAttempts = 0;
   let cloudAttempts = 0;
+  const metronEvents = [];
+  const telemetry = createHydraTelemetry({ store: { async emit(event) { metronEvents.push(event); } } });
   let hydra;
   globalThis.fetch = async (url) => {
     if (String(url).endsWith("/api/chat")) {
@@ -1682,6 +1732,7 @@ test("retries a selected synthetic target then uses its concrete fallback", asyn
       lmStudioBaseUrl: "http://127.0.0.1:11239",
       openaiBaseUrl: "https://chatgpt.com/backend-api/codex",
       syntheticContextOptions: syntheticContextFixture(),
+      telemetry,
     });
     hydra = createHttpServer(handler);
     hydra.listen(0, "127.0.0.1");
@@ -1698,6 +1749,18 @@ test("retries a selected synthetic target then uses its concrete fallback", asyn
     assert.equal(ollamaAttempts, 2);
     assert.equal(cloudAttempts, 1);
     assert.equal(handler.syntheticState.lastSelections.get("hydra/smart").ultimate, "gpt-test");
+    await telemetry.flush();
+    assert.equal(metronEvents.filter((event) => event.type === "route.decision").length, 1);
+    assert.deepEqual(
+      metronEvents
+        .filter((event) => event.type === "generation.completed")
+        .map((event) => [event.data.target_model, event.data.phase, event.data.status]),
+      [
+        ["ollama/tiny", "selected", "failed"],
+        ["ollama/tiny", "selected", "failed"],
+        ["gpt-test", "fallback", "completed"],
+      ],
+    );
   } finally {
     if (hydra?.listening) {
       hydra.close();

@@ -17,6 +17,7 @@ import {
 } from "./debug.js";
 import { ResponseGate } from "./response-gate.js";
 import { ResponsesCommentaryTransform } from "./responses-commentary.js";
+import { observeMetronJson, observeMetronSse } from "./metron/hydra.js";
 import {
   buildSelectorContext,
   runSyntheticSelector,
@@ -65,6 +66,7 @@ export async function emulatedToolStatuses(commands = []) {
 }
 
 function jsonResponse(req, res, status, body, debugAuth = false, extra = {}) {
+  observeMetronJson(res, body);
   const payload = JSON.stringify(body);
   res.writeHead(status, {
     "content-type": "application/json",
@@ -436,6 +438,7 @@ function sseHeaders(res) {
 }
 
 function writeSse(res, event, data) {
+  observeMetronSse(res, event, data);
   res.write(`event: ${event}\n`);
   res.write(`data: ${JSON.stringify(data)}\n\n`);
 }
@@ -2231,6 +2234,7 @@ async function runDirectAttempts({
   source,
   dispatchArgs,
   routingCommentary,
+  telemetry,
 }) {
   let lastError;
   for (let attempt = 0; attempt <= definition.retryCount; attempt += 1) {
@@ -2240,6 +2244,16 @@ async function runDirectAttempts({
       ? new ResponsesCommentaryTransform(`Hydra routed this turn to ${targetSlug}.`)
       : null;
     const gate = new ResponseGate(res, { bodyTransform });
+    const generation = telemetry?.beginGeneration({
+      req: dispatchArgs.req,
+      res: gate,
+      requestedModel: definition.slug,
+      targetModel: targetSlug,
+      provider: route.provider,
+      syntheticModel: definition.slug,
+      phase,
+      attempt: attempt + 1,
+    });
     debugLogSynthetic({
       enabled: debugAuth,
       event: "attempt",
@@ -2254,11 +2268,18 @@ async function runDirectAttempts({
     });
     try {
       const metadata = await dispatchDirectRoute({ ...dispatchArgs, route, res: gate, signal });
-      if (gate.committed) return { targetSlug, route, metadata };
+      if (gate.committed) {
+        await generation?.finish("completed");
+        return { targetSlug, route, metadata };
+      }
       const error = gate.failureError ?? new Error(`Upstream returned HTTP ${gate.statusCode}`);
       error.status = gate.statusCode;
       throw error;
     } catch (error) {
+      await generation?.finish(signal.aborted ? "cancelled" : "failed", {
+        error_code: error?.code ?? null,
+        http_status: error?.status ?? gate.statusCode ?? null,
+      });
       if (gate.committed || res.headersSent) {
         error.hydraPostCommit = true;
         throw error;
@@ -2318,6 +2339,7 @@ async function handleSyntheticRequest({
   syntheticContextOptions = {},
   onSyntheticSelection,
   stateOwner,
+  telemetry,
 }) {
   const definition = syntheticRoute.definition;
   const sessionKey = syntheticSessionKey(req, definition);
@@ -2458,6 +2480,15 @@ async function handleSyntheticRequest({
     },
   });
 
+  await telemetry?.routeDecision({
+    req,
+    requestedModel: definition.slug,
+    selectedModel: selectedSlug,
+    fallback: selectionFallback,
+    stickyReuse: Boolean(lock),
+    selectorDurationMs,
+  });
+
   if (inspectOnly) return { target: selectedSlug, fallback: selectionFallback, reasoningEffort: effectiveEffort };
 
   if (statePinned && sessionKey) state.statefulSessions.set(sessionKey, { targetSlug: selectedSlug });
@@ -2490,6 +2521,7 @@ async function handleSyntheticRequest({
         source,
         dispatchArgs,
         routingCommentary: definition.showRoutingCommentary !== false && !isToolContinuationInput(body),
+        telemetry,
       });
     } catch (error) {
       if (error.hydraPostCommit || selectionFallback || statePinned) throw error;
@@ -2508,6 +2540,7 @@ async function handleSyntheticRequest({
         source,
         dispatchArgs,
         routingCommentary: definition.showRoutingCommentary !== false && !isToolContinuationInput(body),
+        telemetry,
       });
     }
   } catch (error) {
@@ -2587,6 +2620,7 @@ export function createHydraHandler({
   syntheticContextOptions = {},
   onSyntheticSelection,
   onReload,
+  telemetry = null,
 }) {
   const syntheticState = {
     conversations: new Map(),
@@ -2764,6 +2798,7 @@ export function createHydraHandler({
           source: "cli",
           inspectOnly: true,
           syntheticContextOptions,
+          telemetry,
         });
         jsonResponse(req, res, 200, decision, debugAuth, { route });
         return;
@@ -2791,25 +2826,43 @@ export function createHydraHandler({
           source: requestSource(req),
           onSyntheticSelection,
           stateOwner,
+          telemetry,
         });
         return;
       }
-      const metadata = await dispatchDirectRoute({
+      const generation = telemetry?.beginGeneration({
         req,
-        body,
-        route,
-        ollamaBaseUrl,
-        lmStudioBaseUrl,
-        omlxBaseUrl,
-        omlxApiKey,
-        openaiBaseUrl,
-        apiKey,
         res,
-        debugAuth,
-        appServerBridge,
-        webSearchCommands,
-        signal: cancellation.signal,
+        requestedModel: body.model,
+        targetModel: body.model,
+        provider: route.provider,
       });
+      let metadata;
+      try {
+        metadata = await dispatchDirectRoute({
+          req,
+          body,
+          route,
+          ollamaBaseUrl,
+          lmStudioBaseUrl,
+          omlxBaseUrl,
+          omlxApiKey,
+          openaiBaseUrl,
+          apiKey,
+          res,
+          debugAuth,
+          appServerBridge,
+          webSearchCommands,
+          signal: cancellation.signal,
+        });
+        await generation?.finish("completed");
+      } catch (error) {
+        await generation?.finish(cancellation?.stage ? "cancelled" : "failed", {
+          error_code: error?.code ?? null,
+          http_status: error?.status ?? null,
+        });
+        throw error;
+      }
       if (route.provider === "openai") {
         const owner = { targetSlug: body.model };
         if (metadata?.responseId) syntheticState.responseOwners.set(metadata.responseId, owner);
