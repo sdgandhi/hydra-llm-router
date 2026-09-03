@@ -25,9 +25,13 @@ export const HYDRA_CONFIG_DEFAULTS = Object.freeze({
   appTools: "auto",
   appToolServers: ["codex_apps"],
   webSearchCommands: [[BUNDLED_DDGR_TOKEN]],
+  metronEnabled: true,
+  metronCaptureCodex: true,
+  metronMachineHourUsd: 0,
+  metronRateCard: "bundled",
 });
 
-const TOP_LEVEL_KEYS = new Set(["hydra", "codex", "providers", "app_tools", "tools", "synthetic_models"]);
+const TOP_LEVEL_KEYS = new Set(["hydra", "codex", "providers", "app_tools", "tools", "metron", "synthetic_models"]);
 const TABLE_KEYS = {
   hydra: new Set(["port", "debug", "menubar", "data_dir"]),
   codex: new Set(["home", "binary"]),
@@ -38,6 +42,7 @@ const TABLE_KEYS = {
   omlx: new Set(["base_url", "api_key", "context_window"]),
   app_tools: new Set(["mode", "servers"]),
   tools: new Set(["web_search_commands"]),
+  metron: new Set(["enabled", "capture_codex", "machine_hour_usd", "rate_card"]),
 };
 
 function table(value, name) {
@@ -69,6 +74,14 @@ function optionalInteger(value, name, fallback, { allowZero = false } = {}) {
     throw new Error(`${name} must be ${allowZero ? "a nonnegative" : "a positive"} integer`);
   }
   return value || null;
+}
+
+function optionalNumber(value, name, fallback, { minimum = Number.NEGATIVE_INFINITY } = {}) {
+  if (value == null) return fallback;
+  if (typeof value !== "number" || !Number.isFinite(value) || value < minimum) {
+    throw new Error(`${name} must be a finite number greater than or equal to ${minimum}`);
+  }
+  return value;
 }
 
 function stringArray(value, name, fallback) {
@@ -129,6 +142,7 @@ export function parseHydraSettings(text, { configPath }) {
   const omlx = table(providers.omlx, "providers.omlx");
   const appTools = table(parsed.app_tools, "app_tools");
   const tools = table(parsed.tools, "tools");
+  const metron = table(parsed.metron, "metron");
   rejectUnknown(hydra, TABLE_KEYS.hydra, "hydra");
   rejectUnknown(codex, TABLE_KEYS.codex, "codex");
   rejectUnknown(providers, TABLE_KEYS.providers, "providers");
@@ -138,6 +152,7 @@ export function parseHydraSettings(text, { configPath }) {
   rejectUnknown(omlx, TABLE_KEYS.omlx, "providers.omlx");
   rejectUnknown(appTools, TABLE_KEYS.app_tools, "app_tools");
   rejectUnknown(tools, TABLE_KEYS.tools, "tools");
+  rejectUnknown(metron, TABLE_KEYS.metron, "metron");
 
   const mode = optionalString(appTools.mode, "app_tools.mode", HYDRA_CONFIG_DEFAULTS.appTools);
   if (!new Set(["auto", "off"]).has(mode)) throw new Error("app_tools.mode must be auto or off");
@@ -203,6 +218,19 @@ export function parseHydraSettings(text, { configPath }) {
     appTools: mode,
     appToolServers: stringArray(appTools.servers, "app_tools.servers", HYDRA_CONFIG_DEFAULTS.appToolServers),
     webSearchCommands: resolveCommands(rawCommands, configPath),
+    metronEnabled: optionalBoolean(metron.enabled, "metron.enabled", HYDRA_CONFIG_DEFAULTS.metronEnabled),
+    metronCaptureCodex: optionalBoolean(
+      metron.capture_codex,
+      "metron.capture_codex",
+      HYDRA_CONFIG_DEFAULTS.metronCaptureCodex,
+    ),
+    metronMachineHourUsd: optionalNumber(
+      metron.machine_hour_usd,
+      "metron.machine_hour_usd",
+      HYDRA_CONFIG_DEFAULTS.metronMachineHourUsd,
+      { minimum: 0 },
+    ),
+    metronRateCard: optionalString(metron.rate_card, "metron.rate_card", HYDRA_CONFIG_DEFAULTS.metronRateCard),
   };
 }
 
@@ -239,6 +267,12 @@ servers = ${JSON.stringify(HYDRA_CONFIG_DEFAULTS.appToolServers)}
 
 [tools]
 web_search_commands = ${JSON.stringify(HYDRA_CONFIG_DEFAULTS.webSearchCommands)}
+
+[metron]
+enabled = ${HYDRA_CONFIG_DEFAULTS.metronEnabled}
+capture_codex = ${HYDRA_CONFIG_DEFAULTS.metronCaptureCodex}
+machine_hour_usd = ${HYDRA_CONFIG_DEFAULTS.metronMachineHourUsd}
+rate_card = ${quote(HYDRA_CONFIG_DEFAULTS.metronRateCard)}
 `;
 }
 

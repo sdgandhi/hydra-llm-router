@@ -46,6 +46,12 @@ servers = ["one", "two"]
 
 [tools]
 web_search_commands = [["./bin/search", "--json"], ["search"]]
+
+[metron]
+enabled = false
+capture_codex = false
+machine_hour_usd = 1.25
+rate_card = "test-card"
 `,
     { configPath },
   );
@@ -69,6 +75,10 @@ web_search_commands = [["./bin/search", "--json"], ["search"]]
     ["/tmp/hydra-profile/bin/search", "--json"],
     ["search"],
   ]);
+  assert.equal(config.metronEnabled, false);
+  assert.equal(config.metronCaptureCodex, false);
+  assert.equal(config.metronMachineHourUsd, 1.25);
+  assert.equal(config.metronRateCard, "test-card");
 });
 
 test("creates a complete default config once", async () => {
@@ -89,6 +99,10 @@ test("creates a complete default config once", async () => {
     assert.equal(config.lmStudioBaseUrl, "http://127.0.0.1:1234");
     assert.equal(config.omlxBaseUrl, "http://127.0.0.1:8000");
     assert.equal(config.appTools, "auto");
+    assert.equal(config.metronEnabled, true);
+    assert.equal(config.metronCaptureCodex, true);
+    assert.equal(config.metronMachineHourUsd, 0);
+    assert.equal(config.metronRateCard, "bundled");
     assert.deepEqual(config.appToolServers, ["codex_apps"]);
     assert.match(config.webSearchCommands[0][0], /vendor\/ddgr\/ddgr$/);
     assert.match(original, new RegExp(BUNDLED_DDGR_TOKEN.replace("/", "\\/")));

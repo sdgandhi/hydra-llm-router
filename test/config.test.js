@@ -16,6 +16,8 @@ test("stores default Hydra state independently of Codex home", () => {
   assert.equal(paths.codexHome, "/tmp/custom-codex-home");
   assert.equal(paths.hydraDir, path.join(homedir(), ".hydra"));
   assert.equal(paths.hydraConfigPath, path.join(homedir(), ".hydra", "config.toml"));
+  assert.equal(paths.metronEventsDir, path.join(homedir(), ".hydra", "metron", "events"));
+  assert.equal(paths.metronCursorsPath, path.join(homedir(), ".hydra", "metron", "cursors.json"));
 });
 
 test("removes managed hydra provider config without disturbing other sections", () => {

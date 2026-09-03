@@ -29,6 +29,9 @@ export function defaultPaths({ codexHome = "~/.codex", configPath = null, dataDi
     backupPath: path.join(hydraDir, "config.backup.toml"),
     pidPath: path.join(hydraDir, "hydra.pid"),
     logPath: path.join(hydraDir, "hydra.log"),
+    metronDir: path.join(hydraDir, "metron"),
+    metronEventsDir: path.join(hydraDir, "metron", "events"),
+    metronCursorsPath: path.join(hydraDir, "metron", "cursors.json"),
   };
 }
 
