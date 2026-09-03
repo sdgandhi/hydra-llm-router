@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "run_id": "2026-09-03-v1",
+  "started_at": "2026-09-03T22:39:26.581Z",
+  "platform": "darwin",
+  "architecture": "arm64",
+  "node": "v24.16.0",
+  "config_sha256": "799632a3a06a9e346dd44882f007c314694c203e5265739752f4081965c77f73",
+  "machine_hour_usd": 0
+}
