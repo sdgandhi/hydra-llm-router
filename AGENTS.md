@@ -105,6 +105,7 @@ For live CLI verification:
 ## Change Delivery
 
 - After completing and verifying repository work, commit all in-scope changes and push the current branch to its configured remote before handing the work back to the user.
+- For Metron work, use small vertical commits. Run the relevant tests for each slice, then push that verified commit directly to `main` before starting the next slice.
 - Do not include unrelated user changes in the commit.
 
 ## Safety Constraints
