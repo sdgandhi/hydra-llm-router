@@ -15,6 +15,7 @@
     "dev:route": "node scripts/dev-hydra.js route",
     "dev:prompt": "node scripts/dev-hydra.js prompt",
     "dev:session": "node scripts/dev-hydra.js session",
+    "benchmark": "node benchmark/run.js",
     "dmg:dev": "node scripts/build-macos.js --dev",
     "dmg:release": "node scripts/build-macos.js --release",
     "test": "node --test",
