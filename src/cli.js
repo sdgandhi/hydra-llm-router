@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
-import { readFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { createInterface } from "node:readline/promises";
 import process from "node:process";
@@ -30,11 +30,15 @@ import {
 } from "./synthetic-config.js";
 import { ensureHydraConfig, loadHydraSettings } from "./hydra-config.js";
 import { createCodexTailer } from "./metron/codex.js";
+import { createMetronDashboard } from "./metron/dashboard.js";
+import { serializeMetronExport } from "./metron/export.js";
 import { createHydraTelemetry } from "./metron/hydra.js";
+import { summarizeMetron } from "./metron/report.js";
 import { createMetronStore } from "./metron/store.js";
 import { hydraVersion } from "./version.js";
 
-const commands = new Set(["serve", "stop", "refresh", "install", "restore", "status", "models", "route", "prompt", "session"]);
+const commands = new Set(["serve", "stop", "refresh", "install", "restore", "status", "models", "route", "prompt", "session", "metron"]);
+const metronCommands = new Set(["status", "dashboard", "import", "export"]);
 const booleanOptions = new Set(["--debug", "--menubar", "--no-menubar", "--json"]);
 const repeatableOptions = new Set(["--input", "--file", "--image", "--web-search-command"]);
 
@@ -56,6 +60,13 @@ Commands:
   route       Run a synthetic selector and print the target model
   prompt      Run one complete prompt through Hydra via Codex CLI
   session     Run multiple prompts in one Codex CLI session through Hydra
+  metron      Inspect, import, or export local Metron telemetry
+
+Metron commands:
+  metron status
+  metron dashboard
+  metron import --since <ISO-date>
+  metron export --from <ISO-date> --to <ISO-date> --format jsonl|csv|html [--output <path>]
 
 Options:
   --config <path>          Hydra TOML config (default: ~/.hydra/config.toml)
@@ -86,9 +97,18 @@ Options:
 }
 
 export function parseArgs(argv) {
-  const [command, ...rest] = argv;
+  const [command, ...remaining] = argv;
   if (!commands.has(command)) {
     throw new Error(command ? `Unknown command: ${command}` : "Missing command");
+  }
+
+  const rest = [...remaining];
+  let subcommand;
+  if (command === "metron") {
+    subcommand = rest.shift();
+    if (!metronCommands.has(subcommand)) {
+      throw new Error(subcommand ? `Unknown Metron command: ${subcommand}` : "Missing Metron command");
+    }
   }
 
   const options = {};
@@ -116,7 +136,7 @@ export function parseArgs(argv) {
     i += 1;
   }
 
-  return { command, options };
+  return subcommand ? { command, subcommand, options } : { command, options };
 }
 
 function positiveIntegerOption(value, name, fallback) {
@@ -221,6 +241,11 @@ export async function main() {
     return;
   }
 
+  if (parsed.command === "metron") {
+    await runMetronCommand(config, parsed.subcommand, parsed.options);
+    return;
+  }
+
   if (parsed.command === "refresh") {
     const result = await refreshCatalog(config);
     logOmittedSyntheticModels(config, result.syntheticConfig);
@@ -313,6 +338,13 @@ export async function main() {
         store: metronStore,
       })
     : null;
+  const metronDashboard = config.metronEnabled
+    ? createMetronDashboard({
+        store: metronStore,
+        machineHourUsd: config.metronMachineHourUsd,
+        benchmarkRunsDir: fileURLToPath(new URL("../benchmark/runs/", import.meta.url)),
+      })
+    : null;
   metronTailer?.start();
   const metronRuntime = { store: metronStore, telemetry: metronTelemetry, tailer: metronTailer };
   const handler = createHydraHandler({
@@ -329,6 +361,7 @@ export async function main() {
     onSyntheticSelection: () => menuBar?.update(config),
     onReload: reloadRuntimeView,
     telemetry: metronTelemetry,
+    metronDashboard,
   });
   config.syntheticState = handler.syntheticState;
   config.emulatedToolStatuses = await emulatedToolStatuses(config.webSearchCommands);
@@ -473,6 +506,78 @@ async function notifyRunningHydra(config) {
   } catch {
     // Refresh is also valid while the server is stopped.
   }
+}
+
+function requiredDate(value, name) {
+  if (value == null) return null;
+  const date = new Date(value);
+  if (Number.isNaN(date.valueOf())) throw new Error(`${name} must be an ISO date`);
+  return date.toISOString();
+}
+
+export async function runMetronCommand(
+  config,
+  command,
+  options = {},
+  { logger = console, openImpl = null } = {},
+) {
+  const store = createMetronStore({ eventsDir: config.paths.metronEventsDir });
+  if (command === "status") {
+    const events = await store.read();
+    const status = {
+      enabled: config.metronEnabled,
+      capture_codex: config.metronCaptureCodex,
+      events_dir: config.paths.metronEventsDir,
+      ...summarizeMetron(events, { machineHourUsd: config.metronMachineHourUsd }),
+    };
+    logger.log(JSON.stringify(status, null, 2));
+    return status;
+  }
+  if (command === "dashboard") {
+    const url = `http://127.0.0.1:${config.port}/metron/`;
+    logger.log(url);
+    const open = openImpl ?? ((target) => {
+      if (process.platform !== "darwin") return;
+      const child = spawn("/usr/bin/open", [target], { detached: true, stdio: "ignore" });
+      child.unref();
+    });
+    await open(url);
+    return { url };
+  }
+  if (command === "import") {
+    const since = requiredDate(options.since, "--since");
+    const before = (await store.read()).length;
+    const tailer = createCodexTailer({
+      codexHome: config.paths.codexHome,
+      cursorPath: config.paths.metronCursorsPath,
+      store,
+      startAtEnd: false,
+      since,
+    });
+    await tailer.scan();
+    await tailer.stop();
+    const imported = (await store.read()).length - before;
+    logger.log(`Imported ${imported} Metron events`);
+    return { imported };
+  }
+  if (command === "export") {
+    const format = options.format ?? "jsonl";
+    if (!new Set(["jsonl", "csv", "html"]).has(format)) throw new Error("--format must be jsonl, csv, or html");
+    const events = await store.read({
+      from: requiredDate(options.from, "--from"),
+      to: requiredDate(options.to, "--to"),
+    });
+    const output = serializeMetronExport(events, format, { machineHourUsd: config.metronMachineHourUsd });
+    if (options.output) {
+      const outputPath = path.resolve(expandHome(options.output));
+      await writeFile(outputPath, output, { mode: 0o600 });
+      logger.log(`Wrote ${events.length} events to ${outputPath}`);
+      return { count: events.length, outputPath };
+    }
+    logger.log(output.replace(/\n$/, ""));
+    return { count: events.length, output: null };
+  }
+  throw new Error(`Unknown Metron command: ${command}`);
 }
 
 function logOmittedSyntheticModels(config, syntheticConfig) {

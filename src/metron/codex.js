@@ -199,6 +199,7 @@ export function createCodexTailer({
   store,
   pollIntervalMs = 2000,
   startAtEnd = true,
+  since = null,
   clock = () => new Date(),
 }) {
   const roots = [path.join(codexHome, "sessions"), path.join(codexHome, "archived_sessions")];
@@ -256,7 +257,11 @@ export function createCodexTailer({
                   observedAt: clock().toISOString(),
                   eventId: id,
                 });
-                for (const event of events) await store.emit(event);
+                for (const event of events) {
+                  if (since == null || new Date(event.occurredAt).valueOf() >= new Date(since).valueOf()) {
+                    await store.emit(event);
+                  }
+                }
               } catch {
                 // Skip malformed persisted records without blocking later lines.
               }

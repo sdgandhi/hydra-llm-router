@@ -375,6 +375,10 @@ final class HydraMenuDelegate: NSObject, NSApplicationDelegate {
       chooseApplicationAndOpenConfig()
       return
     }
+    if id == "open_metron", let value = info["dashboardUrl"] as? String, let url = URL(string: value) {
+      NSWorkspace.shared.open(url)
+      return
+    }
     emit(["type": "action", "id": id])
   }
 

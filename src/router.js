@@ -2621,6 +2621,7 @@ export function createHydraHandler({
   onSyntheticSelection,
   onReload,
   telemetry = null,
+  metronDashboard = null,
 }) {
   const syntheticState = {
     conversations: new Map(),
@@ -2643,6 +2644,8 @@ export function createHydraHandler({
     let cancellation;
     let route;
     try {
+      if (await metronDashboard?.handle(req, res)) return;
+
       if (req.method === "GET" && req.url === "/healthz") {
         jsonResponse(req, res, 200, { ok: true }, debugAuth);
         return;

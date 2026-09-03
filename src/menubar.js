@@ -88,6 +88,7 @@ export function menuBarStatusItems(config) {
     { kind: "action", id: "restore", title: "Restore Codex Config" },
     { kind: "action", id: "refresh", title: "Refresh" },
     { kind: "action", id: "open_config", title: "Open Hydra Config" },
+    { kind: "action", id: "open_metron", title: "Open Metron Dashboard" },
     { kind: "separator" },
     {
       kind: "submenu",
@@ -105,6 +106,7 @@ export function menuBarStatusItems(config) {
     { kind: "info", title: `OMLX: ${config.omlxBaseUrl}` },
     { kind: "info", title: `Emulated tools: ${emulatedToolsLabel(config.emulatedToolStatuses ?? [])}` },
     { kind: "info", title: `App tools: ${appToolsLabel(config.appToolStatus)}` },
+    { kind: "info", title: `Metron: ${config.metronEnabled === false ? "disabled" : "enabled"}` },
   ];
 
   items.push(
@@ -203,6 +205,7 @@ function menuBarPayload(config) {
     title: "Hydra",
     iconPath: path.join(path.dirname(fileURLToPath(import.meta.url)), "hydra-menubar.png"),
     configPath: config.paths.hydraConfigPath,
+    dashboardUrl: `http://127.0.0.1:${config.port}/metron/`,
     availableModels: menuModelOptions(config.catalog),
     existingSyntheticSlugs: (config.syntheticConfig?.definitions ?? []).map((definition) => definition.slug),
     statusItems: menuBarStatusItems(config),

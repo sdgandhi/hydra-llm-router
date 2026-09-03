@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Metron</title>
+    <link rel="stylesheet" href="/metron/app.css">
+  </head>
+  <body>
+    <main>
+      <header>
+        <div>
+          <p class="eyebrow">HYDRA OBSERVABILITY</p>
+          <h1>Metron</h1>
+          <p class="lede">Local measurements for routed Codex work. Content stays out of telemetry.</p>
+        </div>
+        <button id="refresh" type="button">Refresh</button>
+      </header>
+
+      <section aria-labelledby="summary-heading">
+        <div class="section-title">
+          <h2 id="summary-heading">Overview</h2>
+          <span id="updated">Loading…</span>
+        </div>
+        <div class="cards" id="cards"></div>
+      </section>
+
+      <section aria-labelledby="turns-heading">
+        <div class="section-title"><h2 id="turns-heading">Recent turns</h2></div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Status</th><th>Model</th><th>Project</th><th>Duration</th><th>Tokens</th><th>Tools</th></tr></thead>
+            <tbody id="turns"><tr><td colspan="6">Loading…</td></tr></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="benchmarks-section" class="hidden" aria-labelledby="benchmarks-heading">
+        <div class="section-title"><h2 id="benchmarks-heading">Benchmark runs</h2></div>
+        <div id="benchmarks" class="runs"></div>
+      </section>
+      <p id="error" role="alert"></p>
+    </main>
+    <script src="/metron/app.js" defer></script>
+  </body>
+</html>

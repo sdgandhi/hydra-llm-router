@@ -8,6 +8,7 @@ import {
   codexConfigArgs,
   parseArgs,
   parseCodexJsonEvent,
+  runMetronCommand,
   runRouteCommand,
   shutdownHydra,
 } from "../src/cli.js";
@@ -48,6 +49,29 @@ test("parses an explicit config path for any subcommand", () => {
     command: "status",
     options: { config: "/tmp/hydra.toml" },
   });
+});
+
+test("parses nested Metron commands and export options", () => {
+  assert.deepEqual(parseArgs(["metron", "export", "--from", "2026-09-01", "--format", "csv"]), {
+    command: "metron",
+    subcommand: "export",
+    options: { from: "2026-09-01", format: "csv" },
+  });
+  assert.throws(() => parseArgs(["metron"]), /Missing Metron command/);
+});
+
+test("prints and opens the local Metron dashboard URL", async () => {
+  const logs = [];
+  const opened = [];
+  const result = await runMetronCommand(
+    { port: 4555, paths: { metronEventsDir: "/tmp/unused" } },
+    "dashboard",
+    {},
+    { logger: { log(value) { logs.push(value); } }, openImpl: async (value) => opened.push(value) },
+  );
+  assert.equal(result.url, "http://127.0.0.1:4555/metron/");
+  assert.deepEqual(logs, [result.url]);
+  assert.deepEqual(opened, [result.url]);
 });
 
 test("uses CLI overrides before TOML", async () => {
@@ -198,6 +222,7 @@ test("serve status items match the menubar dropdown content", () => {
       { kind: "action", id: "restore", title: "Restore Codex Config" },
       { kind: "action", id: "refresh", title: "Refresh" },
       { kind: "action", id: "open_config", title: "Open Hydra Config" },
+      { kind: "action", id: "open_metron", title: "Open Metron Dashboard" },
       { kind: "separator" },
       {
         kind: "submenu",
@@ -227,6 +252,7 @@ test("serve status items match the menubar dropdown content", () => {
         title: "Emulated tools: web_search: unavailable (no executable search command found), tool_search: ready",
       },
       { kind: "info", title: "App tools: codex_apps: 196 ready" },
+      { kind: "info", title: "Metron: enabled" },
       { kind: "info", title: "Debug log: /tmp/hydra.log" },
       { kind: "info", title: "Codex config: /tmp/config.toml" },
     ],
