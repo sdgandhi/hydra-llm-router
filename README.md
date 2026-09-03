@@ -1,15 +1,19 @@
 # Hydra LLM Router
 
-Hydra lets Codex Desktop use one model selector for OpenAI cloud models plus local Ollama, LM Studio, and OMLX models.
+Hydra is a Codex orchestration layer for routing each task to the model most likely to complete it at the lowest practical cost. It keeps Codex Desktop's native OpenAI provider path intact, then inserts a local Responses-compatible router that can choose among OpenAI cloud models and local Ollama, LM Studio, and OMLX models.
+
+The goal is not simply cheaper tokens. Hydra optimizes for cost per successful task: use local inference for straightforward work, reserve stronger cloud models for harder turns, keep Codex Desktop in charge of tools and approvals, and preserve conversation state so an agent is not stranded mid-task by an unsafe model switch.
 
 ![Codex Desktop model selector showing OpenAI and Ollama models side by side](docs/assets/codex-model-selector.png)
+
+From Codex's point of view, Hydra is still one familiar model selector. Direct models expose their provider prefixes, while synthetic `hydra/` models such as `hydra/money-saver` make per-turn routing decisions from a configured candidate set, fallback model, retry policy, and scope.
 
 The important design choice is that Hydra does not add a new Codex model provider. It keeps Codex Desktop in its built-in OpenAI provider bucket and only changes:
 
 - `model_catalog_json` to a merged Hydra catalog
 - `openai_base_url` to `http://127.0.0.1:3847`
 
-Keeping the provider identity as OpenAI preserves existing Codex Desktop chats and OAuth behavior.
+Keeping the provider identity as OpenAI preserves existing Codex Desktop chats, OAuth behavior, tool execution, approvals, and stateful OpenAI conversations.
 
 ## Commands
 
