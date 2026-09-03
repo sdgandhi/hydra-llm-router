@@ -255,6 +255,7 @@ export async function runBenchmark(configPath, { clock = () => new Date(), logge
     throw new Error(`Expected ${config.expected_task_count} tasks, found ${Array.isArray(tasks) ? tasks.length : "invalid data"}`);
   }
   const runsDir = path.resolve(REPO_ROOT, config.output_dir ?? "benchmark/runs");
+  await mkdir(runsDir, { recursive: true });
   const runId = await nextRunId(runsDir, clock);
   const partialDir = path.join(runsDir, `.${runId}.in-progress`);
   const artifactsDir = path.join(runsDir, runId);
