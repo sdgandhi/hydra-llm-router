@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
@@ -72,6 +72,50 @@ test("prints and opens the local Metron dashboard URL", async () => {
   assert.equal(result.url, "http://127.0.0.1:4555/metron/");
   assert.deepEqual(logs, [result.url]);
   assert.deepEqual(opened, [result.url]);
+});
+
+test("Metron import backfills from the start without changing live cursors or duplicating events", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "hydra-metron-import-"));
+  const sessions = path.join(root, "codex", "sessions", "2026", "09", "03");
+  const rollout = path.join(sessions, "rollout.jsonl");
+  const cursorPath = path.join(root, "metron", "cursors.json");
+  const eventsDir = path.join(root, "metron", "events");
+  try {
+    await mkdir(sessions, { recursive: true });
+    await writeFile(rollout, [
+      JSON.stringify({ type: "session_meta", payload: { id: "thread-1", cwd: "/tmp/project" } }),
+      JSON.stringify({ type: "turn_context", payload: { turn_id: "turn-1", model: "test-model" } }),
+      JSON.stringify({
+        timestamp: "2026-09-03T12:00:00.000Z",
+        type: "event_msg",
+        payload: { type: "task_complete", turn_id: "turn-1", duration_ms: 42 },
+      }),
+      "",
+    ].join("\n"));
+    const liveCursor = {
+      version: 1,
+      files: {
+        [rollout]: { inode: (await stat(rollout)).ino, offset: (await stat(rollout)).size },
+      },
+    };
+    await mkdir(path.dirname(cursorPath), { recursive: true });
+    await writeFile(cursorPath, `${JSON.stringify(liveCursor, null, 2)}\n`);
+    const config = { paths: { codexHome: path.join(root, "codex"), metronCursorsPath: cursorPath, metronEventsDir: eventsDir } };
+    const logs = [];
+
+    const first = await runMetronCommand(config, "import", {}, { logger: { log(value) { logs.push(value); } } });
+    const second = await runMetronCommand(config, "import", {}, { logger: { log(value) { logs.push(value); } } });
+
+    assert.equal(first.imported, 1);
+    assert.equal(second.imported, 0);
+    assert.deepEqual(logs, ["Imported 1 Metron events", "Imported 0 Metron events"]);
+    assert.deepEqual(JSON.parse(await readFile(cursorPath, "utf8")), liveCursor);
+    const stored = (await readFile(path.join(eventsDir, "2026-09-03.jsonl"), "utf8")).trim().split("\n");
+    assert.equal(stored.length, 1);
+    assert.equal(JSON.parse(stored[0]).turn_id, "turn-1");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test("uses CLI overrides before TOML", async () => {

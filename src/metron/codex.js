@@ -199,6 +199,7 @@ export function createCodexTailer({
   store,
   pollIntervalMs = 2000,
   startAtEnd = true,
+  persistCursors = true,
   since = null,
   clock = () => new Date(),
 }) {
@@ -212,7 +213,7 @@ export function createCodexTailer({
   async function scan() {
     if (scanning) return scanning;
     scanning = (async () => {
-      cursors ??= await loadCursors(cursorPath);
+      cursors ??= startAtEnd ? await loadCursors(cursorPath) : { version: 1, files: {} };
       const files = (await Promise.all(roots.map(listJsonlFiles))).flat();
       const existingByInode = new Map(
         Object.entries(cursors.files).map(([file, value]) => [String(value.inode ?? ""), { file, value }]),
@@ -274,7 +275,7 @@ export function createCodexTailer({
         }
       }
       initialized = true;
-      await saveCursors(cursorPath, cursors);
+      if (persistCursors) await saveCursors(cursorPath, cursors);
     })().finally(() => {
       scanning = null;
     });

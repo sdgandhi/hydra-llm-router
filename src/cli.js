@@ -546,17 +546,29 @@ export async function runMetronCommand(
   }
   if (command === "import") {
     const since = requiredDate(options.since, "--since");
-    const before = (await store.read()).length;
+    const knownEventIds = new Set((await store.read()).map((event) => event.event_id));
+    let imported = 0;
+    const importStore = {
+      async emit(event) {
+        if (knownEventIds.has(event.eventId)) return null;
+        knownEventIds.add(event.eventId);
+        imported += 1;
+        return store.emit(event);
+      },
+      async flush() {
+        await store.flush();
+      },
+    };
     const tailer = createCodexTailer({
       codexHome: config.paths.codexHome,
       cursorPath: config.paths.metronCursorsPath,
-      store,
+      store: importStore,
       startAtEnd: false,
+      persistCursors: false,
       since,
     });
     await tailer.scan();
     await tailer.stop();
-    const imported = (await store.read()).length - before;
     logger.log(`Imported ${imported} Metron events`);
     return { imported };
   }
