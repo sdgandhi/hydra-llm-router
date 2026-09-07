@@ -289,15 +289,25 @@ export async function ensureHydraConfig(configPath) {
   return { created: false };
 }
 
-export async function loadHydraSettings(configPath) {
-  const settings = parseHydraSettings(await readFile(configPath, "utf8"), { configPath });
-  if (settings.omlxApiKey) return settings;
+export async function readLocalOmlxApiKey(
+  settingsPath = path.join(homedir(), ".omlx", "settings.json"),
+) {
   try {
-    const omlxSettings = JSON.parse(await readFile(path.join(homedir(), ".omlx", "settings.json"), "utf8"));
+    const omlxSettings = JSON.parse(await readFile(settingsPath, "utf8"));
     const apiKey = omlxSettings?.auth?.api_key;
-    if (typeof apiKey === "string" && apiKey.trim()) settings.omlxApiKey = apiKey.trim();
+    return typeof apiKey === "string" && apiKey.trim() ? apiKey.trim() : null;
   } catch {
-    // OMLX is optional; explicit providers.omlx.api_key remains available for remote or custom installs.
+    return null;
   }
+}
+
+export async function loadHydraSettings(configPath, { omlxSettingsPath } = {}) {
+  const settings = parseHydraSettings(await readFile(configPath, "utf8"), { configPath });
+  if (settings.omlxApiKey) {
+    settings.omlxApiKeySource = "config";
+    return settings;
+  }
+  settings.omlxApiKey = await readLocalOmlxApiKey(omlxSettingsPath);
+  settings.omlxApiKeySource = settings.omlxApiKey ? "local" : null;
   return settings;
 }

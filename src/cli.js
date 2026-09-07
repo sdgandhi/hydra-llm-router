@@ -13,6 +13,7 @@ import {
   isHydraInstalled,
   loadCatalog,
   refreshCatalog,
+  refreshOmlxApiKey,
   restoreConfig,
   stopServer,
   writePidFile,
@@ -191,6 +192,7 @@ export async function buildConfig(options = {}) {
     ),
     omlxBaseUrl: options.omlx_url ?? saved.omlxBaseUrl,
     omlxApiKey: saved.omlxApiKey,
+    omlxApiKeySource: saved.omlxApiKeySource,
     omlxContextWindow: positiveIntegerOption(
       options.omlx_context_window,
       "--omlx-context-window",
@@ -310,6 +312,7 @@ export async function main() {
   config.installed = await isHydraInstalled(config);
   let menuBar = null;
   const reloadRuntimeView = async () => {
+    await refreshOmlxApiKey(config);
     config.catalog = await loadCatalog(config.paths);
     config.syntheticConfig = await loadSyntheticConfig(config.paths);
     logOmittedSyntheticModels(config, config.syntheticConfig);
@@ -353,6 +356,7 @@ export async function main() {
     lmStudioBaseUrl: config.lmStudioBaseUrl,
     omlxBaseUrl: config.omlxBaseUrl,
     omlxApiKey: config.omlxApiKey,
+    getOmlxApiKey: () => config.omlxApiKey,
     openaiBaseUrl: config.openaiBaseUrl,
     apiKey: config.openaiApiKey,
     webSearchCommands: config.webSearchCommands,

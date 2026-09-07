@@ -65,7 +65,7 @@ Use `scripts/dev-codex` directly when another development tool needs a Codex CLI
 - Local Ollama, LM Studio, and OMLX catalog entries are cloned from a visible cloud model template, then adjusted for local capabilities.
 - Ollama discovery uses `/api/tags`, with per-model capability/context metadata from `/api/show`.
 - LM Studio discovery prefers `/api/v1/models` and falls back to the OpenAI-compatible `/v1/models` endpoint. Only `llm` models from the native endpoint are included.
-- OMLX discovery uses authenticated `/v1/models/status` and falls back to `/v1/models`; Hydra reads the local API key from `~/.omlx/settings.json` when the OMLX provider does not specify one.
+- OMLX discovery uses authenticated `/v1/models/status` and falls back to `/v1/models`; Hydra reads the local API key from `~/.omlx/settings.json` at startup and before each refresh when the OMLX provider does not specify one.
 - Local catalog entries advertise text, vision, reasoning, and tool support from provider metadata; local web search is advertised only when Hydra's emulation is ready.
 - LM Studio and OMLX requests use `/v1/chat/completions`; Ollama requests use `/api/chat`. All are translated to/from Codex Responses-shaped requests.
 - Normalize Responses reasoning from `reasoning.effort`, `reasoning_effort`, and `reasoning_level`. For LM Studio and OMLX, explicit `none` sets `chat_template_kwargs.enable_thinking` to `false` and forwards `reasoning_effort: "none"`; non-`none` sets thinking to `true` and forwards the normalized effort only when the route advertises thinking support.

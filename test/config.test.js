@@ -8,6 +8,7 @@ import {
   hydraConfigPatch,
   insertHydraConfig,
   isHydraInstalled,
+  refreshOmlxApiKey,
   removeManagedHydraConfig,
 } from "../src/config.js";
 
@@ -18,6 +19,21 @@ test("stores default Hydra state independently of Codex home", () => {
   assert.equal(paths.hydraConfigPath, path.join(homedir(), ".hydra", "config.toml"));
   assert.equal(paths.metronEventsDir, path.join(homedir(), ".hydra", "metron", "events"));
   assert.equal(paths.metronCursorsPath, path.join(homedir(), ".hydra", "metron", "cursors.json"));
+});
+
+test("refreshes locally discovered OMLX credentials but preserves explicit config", async () => {
+  const local = { omlxApiKey: "stale", omlxApiKeySource: "local" };
+  await refreshOmlxApiKey(local, { readLocalOmlxApiKeyImpl: async () => "rotated" });
+  assert.equal(local.omlxApiKey, "rotated");
+  assert.equal(local.omlxApiKeySource, "local");
+
+  const configured = { omlxApiKey: "configured", omlxApiKeySource: "config" };
+  await refreshOmlxApiKey(configured, {
+    readLocalOmlxApiKeyImpl: async () => {
+      throw new Error("explicit keys must not consult local settings");
+    },
+  });
+  assert.equal(configured.omlxApiKey, "configured");
 });
 
 test("removes managed hydra provider config without disturbing other sections", () => {

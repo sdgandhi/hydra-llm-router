@@ -127,6 +127,29 @@ test("does not add missing sections to an existing config", async () => {
   }
 });
 
+test("records whether the OMLX API key came from config or local settings", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "hydra-omlx-key-source-"));
+  const configPath = path.join(root, "config.toml");
+  const omlxSettingsPath = path.join(root, "omlx-settings.json");
+  try {
+    await writeFile(configPath, "[providers.omlx]\nbase_url = \"http://omlx.test\"\n");
+    await writeFile(omlxSettingsPath, JSON.stringify({ auth: { api_key: "local-secret" } }));
+    const local = await loadHydraSettings(configPath, { omlxSettingsPath });
+    assert.equal(local.omlxApiKey, "local-secret");
+    assert.equal(local.omlxApiKeySource, "local");
+
+    await writeFile(
+      configPath,
+      "[providers.omlx]\nbase_url = \"http://omlx.test\"\napi_key = \"configured-secret\"\n",
+    );
+    const configured = await loadHydraSettings(configPath, { omlxSettingsPath });
+    assert.equal(configured.omlxApiKey, "configured-secret");
+    assert.equal(configured.omlxApiKeySource, "config");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("rejects unknown settings instead of silently ignoring them", () => {
   assert.throws(
     () => parseHydraSettings("[hydra]\nporrt = 3847\n", { configPath: "/tmp/config.toml" }),

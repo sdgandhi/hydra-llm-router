@@ -2612,6 +2612,7 @@ export function createHydraHandler({
   lmStudioBaseUrl,
   omlxBaseUrl,
   omlxApiKey,
+  getOmlxApiKey = null,
   openaiBaseUrl,
   apiKey,
   webSearchCommands = [],
@@ -2643,6 +2644,7 @@ export function createHydraHandler({
   async function hydraHandler(req, res) {
     let cancellation;
     let route;
+    const currentOmlxApiKey = typeof getOmlxApiKey === "function" ? getOmlxApiKey() : omlxApiKey;
     try {
       if (await metronDashboard?.handle(req, res)) return;
 
@@ -2792,7 +2794,7 @@ export function createHydraHandler({
           ollamaBaseUrl,
           lmStudioBaseUrl,
           omlxBaseUrl,
-          omlxApiKey,
+          omlxApiKey: currentOmlxApiKey,
           openaiBaseUrl,
           apiKey,
           debugAuth,
@@ -2819,7 +2821,7 @@ export function createHydraHandler({
           ollamaBaseUrl,
           lmStudioBaseUrl,
           omlxBaseUrl,
-          omlxApiKey,
+          omlxApiKey: currentOmlxApiKey,
           openaiBaseUrl,
           apiKey,
           debugAuth,
@@ -2849,7 +2851,7 @@ export function createHydraHandler({
           ollamaBaseUrl,
           lmStudioBaseUrl,
           omlxBaseUrl,
-          omlxApiKey,
+          omlxApiKey: currentOmlxApiKey,
           openaiBaseUrl,
           apiKey,
           res,

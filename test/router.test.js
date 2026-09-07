@@ -775,9 +775,10 @@ test("routes authenticated OMLX chat completions as Responses responses", async 
   }));
   const originalFetch = globalThis.fetch;
   let upstreamRequest;
+  let currentOmlxApiKey = "omlx-secret";
   globalThis.fetch = async (url, options) => {
     assert.equal(String(url), "http://127.0.0.1:8000/v1/chat/completions");
-    assert.equal(options.headers.authorization, "Bearer omlx-secret");
+    assert.equal(options.headers.authorization, `Bearer ${currentOmlxApiKey}`);
     upstreamRequest = JSON.parse(options.body);
     return new Response(JSON.stringify({
       choices: [{ message: { content: "hello from omlx" } }],
@@ -791,7 +792,8 @@ test("routes authenticated OMLX chat completions as Responses responses", async 
       ollamaBaseUrl: "http://127.0.0.1:11434",
       lmStudioBaseUrl: "http://127.0.0.1:11239",
       omlxBaseUrl: "http://127.0.0.1:8000",
-      omlxApiKey: "omlx-secret",
+      omlxApiKey: "stale-secret",
+      getOmlxApiKey: () => currentOmlxApiKey,
       openaiBaseUrl: "https://chatgpt.com/backend-api/codex",
     });
     hydra = createHttpServer(handler);
@@ -809,6 +811,14 @@ test("routes authenticated OMLX chat completions as Responses responses", async 
     assert.equal("request_id" in upstreamRequest, false);
     assert.equal(body.output[0].content[0].text, "hello from omlx");
     assert.deepEqual(body.usage, { input_tokens: 2, output_tokens: 3, total_tokens: 5 });
+
+    currentOmlxApiKey = "rotated-secret";
+    const rotatedResponse = await originalFetch(`http://127.0.0.1:${hydra.address().port}/responses`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "omlx/gemma", input: "hello again", stream: false }),
+    });
+    assert.equal(rotatedResponse.status, 200);
   } finally {
     if (hydra?.listening) {
       hydra.close();

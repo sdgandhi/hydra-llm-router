@@ -2,6 +2,7 @@ import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 import { buildCatalog } from "./catalog.js";
+import { readLocalOmlxApiKey } from "./hydra-config.js";
 import { emulatedToolStatuses } from "./router.js";
 import { loadSyntheticConfig } from "./synthetic-config.js";
 
@@ -55,7 +56,18 @@ export async function writeJsonAtomic(filePath, value) {
   await rename(tempPath, filePath);
 }
 
+export async function refreshOmlxApiKey(
+  config,
+  { readLocalOmlxApiKeyImpl = readLocalOmlxApiKey } = {},
+) {
+  if (config.omlxApiKeySource === "config") return config.omlxApiKey;
+  config.omlxApiKey = await readLocalOmlxApiKeyImpl();
+  config.omlxApiKeySource = config.omlxApiKey ? "local" : null;
+  return config.omlxApiKey;
+}
+
 export async function refreshCatalog(config) {
+  await refreshOmlxApiKey(config);
   const sourceCatalog = await readJson(config.paths.codexModelCachePath);
   const syntheticConfig = await loadSyntheticConfig(config.paths);
   const toolStatuses = await emulatedToolStatuses(config.webSearchCommands);

@@ -346,7 +346,7 @@ node src/cli.js install --config ./profiles/dev.toml
 
 An explicit config defaults generated state to its own directory, which keeps development and test profiles separate from `~/.hydra/`. `codex.home` still determines which Codex installation `install` and `restore` modify. Router settings such as the port and provider URLs take effect when Hydra restarts; `refresh` reloads catalogs and synthetic definitions.
 
-When `providers.omlx.api_key` is omitted, Hydra reads the existing key from `~/.omlx/settings.json`. An explicit TOML key takes precedence, which also supports remote or custom OMLX installations. Runtime settings otherwise come exclusively from TOML and command flags. Release signing and notarization variables remain build-only inputs.
+When `providers.omlx.api_key` is omitted, Hydra reads the existing key from `~/.omlx/settings.json` at startup and before every catalog refresh, so OMLX installs and key rotations are picked up without restarting Hydra. An explicit TOML key takes precedence, which also supports remote or custom OMLX installations. Runtime settings otherwise come exclusively from TOML and command flags. Release signing and notarization variables remain build-only inputs.
 
 Generated files live under:
 
